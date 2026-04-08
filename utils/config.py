@@ -3,6 +3,7 @@ from enum import Enum
 import json
 import logging
 from utils.logger import setup_logger
+from utils import norm
 
 logger = setup_logger(level=logging.DEBUG)
 
@@ -45,18 +46,26 @@ def get_config():
 
     config = {
         "proxyAddress": os.getenv("PROXY_ADDRESS", ""),
-        "messageTemplate": os.getenv("MESSAGE_TEMPLATE", "[盖瑞]今日火花[加一]\\n—— [右边] 每日一言 [左边] ——\\n[API]"),
+        "messageTemplate": os.getenv(
+            "MESSAGE_TEMPLATE",
+            "[盖瑞]今日火花[加一]\\n—— [右边] 每日一言 [左边] ——\\n[API]",
+        ),
         "hitokotoTypes": json.loads(
             os.getenv("HITOKOTO_TYPES", '["文学","影视","诗词","哲学"]')
         ),
         "matchMode": os.getenv("MATCH_MODE", "nickname"),  # 是否使用短 ID 进行好友匹配
-        "browserTimeout": int(os.getenv("BROWSER_TIMEOUT", "120000")),  # 浏览器操作超时时间，单位毫秒
-        "friendListTimeout": int(os.getenv("FRIEND_LIST_WAIT_TIME", "2000")),  # 好友列表加载超时时间，单位毫秒
+        "browserTimeout": int(
+            os.getenv("BROWSER_TIMEOUT", "120000")
+        ),  # 浏览器操作超时时间，单位毫秒
+        "friendListTimeout": int(
+            os.getenv("FRIEND_LIST_WAIT_TIME", "2000")
+        ),  # 好友列表加载超时时间，单位毫秒
         "taskRetryTimes": int(os.getenv("TASK_RETRY_TIMES", "3")),  # 任务重试次数
         "logLevel": os.getenv("LOG_LEVEL", "DEBUG"),  # 日志级别
     }
 
     return config
+
 
 def sanitize_cookies(cookies):
     for cookie in cookies:
@@ -90,9 +99,7 @@ def get_userData():
             os.getenv(cookies_key, "").encode("utf-8").decode("unicode_escape")
         )
         if not cookies_str:
-            logger.warning(
-                f"{username} 的任务 缺少 {cookies_key} 环境变量，已跳过"
-            )
+            logger.warning(f"{username} 的任务 缺少 {cookies_key} 环境变量，已跳过")
             continue
         try:
             cookies = json.loads(cookies_str)
@@ -105,7 +112,7 @@ def get_userData():
                 "unique_id": unique_id,
                 "username": username,
                 "cookies": sanitize_cookies(cookies),
-                "targets": task.get("targets", []),
+                "targets": [norm(t) for t in task.get("targets", [])], # 标准化目标列表
             }
         )
 
