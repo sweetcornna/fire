@@ -8,7 +8,7 @@ on:
 jobs:
   run-main:
     timeout-minutes: 20
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     environment: user-data
     steps:
     - uses: actions/checkout@v4
