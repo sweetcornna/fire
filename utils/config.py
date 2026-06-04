@@ -64,6 +64,7 @@ def get_config():
         "logLevel": os.getenv("LOG_LEVEL", "DEBUG"),  # 日志级别
         "debugUserIDMapping": os.getenv("DEBUG_USERID_MAPPING", "") == "1",
         "diagnoseUserSearch": os.getenv("DIAGNOSE_USER_SEARCH", "") == "1",
+        "diagnoseFriendMatching": os.getenv("DIAGNOSE_FRIEND_MATCHING", "") == "1",
     }
 
     return config

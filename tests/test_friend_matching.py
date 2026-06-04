@@ -209,6 +209,23 @@ class FriendMatchingTests(unittest.TestCase):
             next(selected)
         self.assertEqual(page.clicked_titles, ["重复好友"])
 
+    def test_summarizes_target_matches_without_clicking(self):
+        tasks.userIDDict["熊霖竹"] = [
+            "20060941610",
+            "20060941610",
+            "",
+            "兴隆竹🏵️",
+            "熊霖竹",
+        ]
+
+        matched, unmatched = tasks.summarize_target_matches(
+            ["熊霖竹", "其他好友"],
+            ["兴隆竹🏵️", "漏发好友"],
+        )
+
+        self.assertEqual(matched, {"兴隆竹🏵️": "熊霖竹"})
+        self.assertEqual(unmatched, ["漏发好友"])
+
 
 if __name__ == "__main__":
     unittest.main()

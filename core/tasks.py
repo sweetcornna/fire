@@ -31,6 +31,7 @@ SEARCH_INPUT_SELECTORS = (
 )
 USER_NUMBER_TARGET_RE = re.compile(r"^用户(\d+)$")
 MAX_USER_SEARCH_SNIPPETS = 40
+MAX_EMPTY_SCROLLS = 10
 
 
 def _norm_value(value) -> str:
@@ -175,6 +176,108 @@ def diagnose_user_search(page, username, targets):
                     f"账号 {username} 用户搜索诊断候选 {index}: "
                     f"text={snippet.get('text', '')}, href={snippet.get('href', '')}"
                 )
+
+
+def summarize_target_matches(friend_titles, targets):
+    matched = {}
+    for title in friend_titles:
+        remaining_targets = [
+            target for target in targets if target not in matched
+        ]
+        if not remaining_targets:
+            break
+        targetSymbol = checkTargetName(title, remaining_targets)
+        if targetSymbol and targetSymbol not in matched:
+            matched[targetSymbol] = _norm_value(title)
+
+    unmatched = [target for target in targets if target not in matched]
+    return matched, unmatched
+
+
+def collect_friend_titles(page, username):
+    found_titles = []
+    found_set = set()
+    empty_scroll_count = 0
+
+    while True:
+        prev_found_count = len(found_set)
+        for element in page.locator(CONVERSATION_ITEM_SELECTOR).all():
+            try:
+                if hasattr(element, "is_visible") and not element.is_visible():
+                    continue
+                targetName = _norm_value(
+                    element.locator(CONVERSATION_TITLE_SELECTOR).inner_text()
+                )
+                if targetName and targetName not in found_set:
+                    found_set.add(targetName)
+                    found_titles.append(targetName)
+                    logger.debug(f"账号 {username} 匹配诊断发现好友 {targetName}")
+            except Exception:
+                traceback.print_exc()
+
+        new_found = len(found_set) > prev_found_count
+        if new_found:
+            empty_scroll_count = 0
+        else:
+            empty_scroll_count += 1
+
+        if empty_scroll_count >= MAX_EMPTY_SCROLLS:
+            logger.warning(
+                f"账号 {username} 匹配诊断连续 {MAX_EMPTY_SCROLLS} 次滚动未发现新好友，判定已到达底部"
+            )
+            return found_titles
+
+        scrollable_element = page.locator(CONVERSATION_LIST_SELECTOR).element_handle()
+        if not scrollable_element:
+            logger.error(f"账号 {username} 匹配诊断未找到滚动容器，退出")
+            return found_titles
+
+        scroll_top_before = page.evaluate(
+            "(element) => element.scrollTop", scrollable_element
+        )
+        page.evaluate("(element) => element.scrollTop += 800", scrollable_element)
+        time.sleep(0.3)
+        scroll_top_after = page.evaluate(
+            "(element) => element.scrollTop", scrollable_element
+        )
+
+        if scroll_top_before == scroll_top_after:
+            empty_scroll_count += 2
+            logger.debug(
+                f"账号 {username} 匹配诊断 scrollTop 未变化 ({scroll_top_before})，可能已到底 "
+                f"(空滚动计数: {empty_scroll_count}/{MAX_EMPTY_SCROLLS})"
+            )
+        else:
+            logger.debug(
+                f"账号 {username} 匹配诊断滚动好友列表 (scrollTop: {scroll_top_before} -> {scroll_top_after})"
+            )
+        time.sleep(1.5)
+
+
+def diagnose_friend_matching(page, username, targets):
+    logger.info(f"账号 {username} 启用好友匹配诊断模式，不发送消息")
+    retry_operation(
+        "打开抖音网页聊天页面",
+        page.goto,
+        retries=config["taskRetryTimes"],
+        delay=5,
+        url="https://www.douyin.com/chat",
+    )
+    time.sleep(5)
+    friend_titles = collect_friend_titles(page, username)
+    matched, unmatched = summarize_target_matches(friend_titles, targets)
+
+    logger.info(
+        f"账号 {username} 匹配诊断完成: 目标 {len(targets)} 个，"
+        f"列表好友 {len(friend_titles)} 个，匹配 {len(matched)} 个，未匹配 {len(unmatched)} 个"
+    )
+    for target, title in matched.items():
+        logger.info(f"账号 {username} 匹配诊断已匹配: 目标 {target} -> 当前显示 {title}")
+    for target in unmatched:
+        logger.warning(
+            f"账号 {username} 匹配诊断未匹配: 目标 {target}，搜索词 {get_search_terms_for_target(target)}"
+        )
+    return matched, unmatched
 
 
 def handle_response(response: Response):
@@ -533,6 +636,11 @@ def do_user_task(browser, username, cookies, targets):
     if config.get("diagnoseUserSearch"):
         logger.info(f"账号 {username} 启用用户搜索诊断模式，不发送消息")
         diagnose_user_search(page, username, targets)
+        context.close()
+        return
+
+    if config.get("diagnoseFriendMatching"):
+        diagnose_friend_matching(page, username, targets)
         context.close()
         return
 
