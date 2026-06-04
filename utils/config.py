@@ -63,6 +63,7 @@ def get_config():
         "taskRetryTimes": int(os.getenv("TASK_RETRY_TIMES", "3")),  # 任务重试次数
         "logLevel": os.getenv("LOG_LEVEL", "DEBUG"),  # 日志级别
         "debugUserIDMapping": os.getenv("DEBUG_USERID_MAPPING", "") == "1",
+        "diagnoseUserSearch": os.getenv("DIAGNOSE_USER_SEARCH", "") == "1",
     }
 
     return config

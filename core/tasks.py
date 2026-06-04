@@ -1,5 +1,7 @@
 import traceback
 import re
+from pathlib import Path
+from urllib.parse import quote
 from utils.logger import setup_logger
 from utils.config import get_config, get_userData
 from utils import norm
@@ -28,6 +30,7 @@ SEARCH_INPUT_SELECTORS = (
     'or contains(@data-placeholder, "搜索")]',
 )
 USER_NUMBER_TARGET_RE = re.compile(r"^用户(\d+)$")
+MAX_USER_SEARCH_SNIPPETS = 40
 
 
 def _norm_value(value) -> str:
@@ -72,6 +75,106 @@ def get_search_terms_for_target(target):
             term_set.update(_dedupe(terms))
 
     return _dedupe(terms)
+
+
+def get_user_search_url(term):
+    return f"https://www.douyin.com/search/{quote(_norm_value(term))}?type=user"
+
+
+def _safe_filename(value):
+    filename = re.sub(r"[^0-9A-Za-z._-]+", "_", _norm_value(value)).strip("_")
+    return filename[:80] or "target"
+
+
+def collect_user_search_snippets(page, terms):
+    return page.evaluate(
+        """
+        ({ terms, limit }) => {
+            const normalizedTerms = terms.filter(Boolean);
+            const seen = new Set();
+            const snippets = [];
+            const elements = document.querySelectorAll('a, [role="link"], div, span');
+
+            for (const element of elements) {
+                const rect = element.getBoundingClientRect();
+                if (!rect || rect.width <= 0 || rect.height <= 0) {
+                    continue;
+                }
+
+                const text = (element.innerText || element.textContent || '')
+                    .replace(/\\s+/g, ' ')
+                    .trim();
+                const href = element.href || element.getAttribute('href') || '';
+                const matchedTerm = normalizedTerms.some(
+                    (term) => text.includes(term) || href.includes(term)
+                );
+
+                if (!matchedTerm && !href.includes('/user/')) {
+                    continue;
+                }
+                if (!text && !href) {
+                    continue;
+                }
+
+                const key = `${text}|${href}`;
+                if (seen.has(key)) {
+                    continue;
+                }
+                seen.add(key);
+                snippets.push({
+                    text: text.slice(0, 200),
+                    href: href.slice(0, 300),
+                });
+                if (snippets.length >= limit) {
+                    break;
+                }
+            }
+
+            return snippets;
+        }
+        """,
+        {"terms": _dedupe(terms), "limit": MAX_USER_SEARCH_SNIPPETS},
+    )
+
+
+def diagnose_user_search(page, username, targets):
+    logs_dir = Path("logs")
+    logs_dir.mkdir(exist_ok=True)
+
+    for target in targets:
+        terms = get_search_terms_for_target(target)
+        for term in terms:
+            url = get_user_search_url(term)
+            logger.debug(
+                f"账号 {username} 用户搜索诊断目标 {target}，搜索词: {term}，URL: {url}"
+            )
+            page.goto(url)
+            time.sleep(config["friendListTimeout"] / 1000 + 2)
+
+            screenshot_path = logs_dir / (
+                f"user-search-{_safe_filename(target)}-{_safe_filename(term)}.png"
+            )
+            try:
+                page.screenshot(path=str(screenshot_path), full_page=True)
+                logger.debug(f"账号 {username} 用户搜索诊断截图: {screenshot_path}")
+            except Exception:
+                traceback.print_exc()
+
+            try:
+                snippets = collect_user_search_snippets(page, terms)
+            except Exception:
+                traceback.print_exc()
+                snippets = []
+
+            if not snippets:
+                logger.debug(
+                    f"账号 {username} 用户搜索诊断无候选结果，目标 {target}，搜索词 {term}"
+                )
+            for index, snippet in enumerate(snippets, start=1):
+                logger.debug(
+                    f"账号 {username} 用户搜索诊断候选 {index}: "
+                    f"text={snippet.get('text', '')}, href={snippet.get('href', '')}"
+                )
 
 
 def handle_response(response: Response):
@@ -426,6 +529,12 @@ def do_user_task(browser, username, cookies, targets):
 
     # 注入 Cookie
     context.add_cookies(cookies)
+
+    if config.get("diagnoseUserSearch"):
+        logger.info(f"账号 {username} 启用用户搜索诊断模式，不发送消息")
+        diagnose_user_search(page, username, targets)
+        context.close()
+        return
 
     # 打开抖音网页聊天页面
     retry_operation(

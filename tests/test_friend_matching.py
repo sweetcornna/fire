@@ -162,6 +162,12 @@ class FriendMatchingTests(unittest.TestCase):
             ["用户2061764921260", "2061764921260"],
         )
 
+    def test_builds_douyin_user_search_url(self):
+        self.assertEqual(
+            tasks.get_user_search_url("用户2061764921260"),
+            "https://www.douyin.com/search/%E7%94%A8%E6%88%B72061764921260?type=user",
+        )
+
     def test_user_number_target_matches_current_name_from_api_alias(self):
         tasks.userIDDict["涵老师"] = [
             "",
