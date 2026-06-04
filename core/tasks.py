@@ -149,6 +149,7 @@ def find_search_input(page):
             for index in range(locator.count()):
                 candidate = locator.nth(index)
                 if candidate.is_visible():
+                    logger.debug(f"找到聊天搜索框: {selector} #{index}")
                     return candidate
         except Exception:
             continue
@@ -162,6 +163,10 @@ def fill_search_input(search_input, value):
     except Exception:
         search_input.press("Control+A")
         search_input.type(value)
+    try:
+        search_input.press("Enter")
+    except Exception:
+        pass
 
 
 def click_matching_visible_user(page, username, targets):
@@ -182,18 +187,49 @@ def click_matching_visible_user(page, username, targets):
     return None
 
 
+def click_visible_text_result(page, username, target, terms):
+    for term in terms:
+        try:
+            locator = page.get_by_text(term, exact=True)
+        except Exception:
+            continue
+
+        try:
+            count = locator.count()
+        except Exception:
+            count = 0
+
+        for index in range(count):
+            try:
+                candidate = locator.nth(index)
+                if not candidate.is_visible():
+                    continue
+                logger.debug(
+                    f"账号 {username} 点击搜索文本结果 {term} 以选择目标好友 {target}"
+                )
+                candidate.click()
+                return target
+            except Exception:
+                traceback.print_exc()
+    return None
+
+
 def search_and_select_target(page, username, target):
     search_input = find_search_input(page)
     if not search_input:
         logger.warning(f"账号 {username} 未找到聊天搜索框，无法搜索目标好友 {target}")
         return None
 
-    for term in get_search_terms_for_target(target):
+    terms = get_search_terms_for_target(target)
+    for term in terms:
         try:
             logger.debug(f"账号 {username} 搜索目标好友 {target}，搜索词: {term}")
             fill_search_input(search_input, term)
             time.sleep(config["friendListTimeout"] / 1000)
             targetSymbol = click_matching_visible_user(page, username, [target])
+            if targetSymbol:
+                return targetSymbol
+            targetSymbol = click_visible_text_result(page, username, target, terms)
             if targetSymbol:
                 return targetSymbol
         except Exception:
