@@ -95,6 +95,12 @@ def handle_response(response: Response):
                 nickname = _norm_value(item.get("nickname"))
                 remark_name = _norm_value(item.get("remark_name", nickname))
                 values = [short_id, unique_id, sec_uid, nickname, remark_name]
+                if config.get("debugUserIDMapping"):
+                    logger.debug(
+                        "好友API映射: "
+                        f"short_id={short_id}, unique_id={unique_id}, "
+                        f"nickname={nickname}, remark_name={remark_name}"
+                    )
                 for key in {nickname, remark_name}:
                     if key:
                         userIDDict[key] = values

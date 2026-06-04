@@ -62,6 +62,7 @@ def get_config():
         ),  # 好友列表加载超时时间，单位毫秒
         "taskRetryTimes": int(os.getenv("TASK_RETRY_TIMES", "3")),  # 任务重试次数
         "logLevel": os.getenv("LOG_LEVEL", "DEBUG"),  # 日志级别
+        "debugUserIDMapping": os.getenv("DEBUG_USERID_MAPPING", "") == "1",
     }
 
     return config
