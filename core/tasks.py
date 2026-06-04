@@ -33,6 +33,7 @@ USER_NUMBER_TARGET_RE = re.compile(r"^用户(\d+)$")
 MAX_USER_SEARCH_SNIPPETS = 40
 MAX_EMPTY_SCROLLS = 10
 DEFAULT_SEARCH_ACTION_TIMEOUT_MS = 5000
+DEFAULT_CHAT_OPEN_TIMEOUT_MS = 10000
 
 
 def _norm_value(value) -> str:
@@ -375,18 +376,65 @@ def checkTargetName(targetName, targets):
     return targetSymbol
 
 
+def _box_value(box, key):
+    return float(box.get(key, 0) if box else 0)
+
+
+def _search_input_score(page, candidate):
+    try:
+        list_box = page.locator(CONVERSATION_LIST_SELECTOR).bounding_box()
+        candidate_box = candidate.bounding_box()
+    except Exception:
+        return 1000
+
+    if not list_box or not candidate_box:
+        return 1000
+
+    list_left = _box_value(list_box, "x")
+    list_right = list_left + _box_value(list_box, "width")
+    input_left = _box_value(candidate_box, "x")
+    input_right = input_left + _box_value(candidate_box, "width")
+    overlap = max(0, min(list_right, input_right) - max(list_left, input_left))
+
+    list_top = _box_value(list_box, "y")
+    input_bottom = _box_value(candidate_box, "y") + _box_value(candidate_box, "height")
+    vertical_gap = abs(list_top - input_bottom)
+
+    if overlap > 0:
+        return vertical_gap
+    return 500 + vertical_gap
+
+
 def find_search_input(page):
+    candidates = []
+    candidate_order = 0
     for selector in SEARCH_INPUT_SELECTORS:
         try:
             locator = page.locator(selector)
             for index in range(locator.count()):
                 candidate = locator.nth(index)
                 if candidate.is_visible():
-                    logger.debug(f"找到聊天搜索框: {selector} #{index}")
-                    return candidate
+                    score = _search_input_score(page, candidate)
+                    candidates.append((score, candidate_order, selector, index, candidate))
+                    candidate_order += 1
         except Exception:
             continue
+
+    if candidates:
+        score, _, selector, index, candidate = min(candidates, key=lambda item: item[:2])
+        logger.debug(f"找到聊天搜索框: {selector} #{index}，score={score}")
+        return candidate
     return None
+
+
+def wait_for_chat_editor(page, username, target, timeout=None):
+    timeout = timeout or config.get("chatOpenTimeout", DEFAULT_CHAT_OPEN_TIMEOUT_MS)
+    try:
+        page.wait_for_selector(CHAT_EDITOR_SELECTOR, timeout=timeout)
+        return True
+    except Exception as error:
+        logger.warning(f"账号 {username} 选择好友 {target} 后聊天输入框未出现: {error}")
+        return False
 
 
 def _locator_action(locator, action, *args, timeout=None):
@@ -427,7 +475,8 @@ def click_matching_visible_user(page, username, targets):
             targetSymbol = checkTargetName(targetName, targets)
             if targetSymbol:
                 element.click()
-                return targetSymbol
+                if wait_for_chat_editor(page, username, targetSymbol):
+                    return targetSymbol
         except Exception:
             traceback.print_exc()
     return None
@@ -454,7 +503,8 @@ def click_visible_text_result(page, username, target, terms):
                     f"账号 {username} 点击搜索文本结果 {term} 以选择目标好友 {target}"
                 )
                 candidate.click()
-                return target
+                if wait_for_chat_editor(page, username, target):
+                    return target
             except Exception:
                 traceback.print_exc()
     return None
@@ -533,16 +583,17 @@ def scroll_and_select_user(page, username, targets):
 
                 if targetSymbol:
                     element.click()
-                    
-                    yield targetSymbol
+                    if wait_for_chat_editor(page, username, targetSymbol):
+                        yield targetSymbol
 
-                    # [修改] 标记已找到，如果全找到了直接退出
-                    if targetSymbol in remaining_targets:
-                        remaining_targets.remove(targetSymbol)
-                    if len(remaining_targets) == 0:
-                        logger.debug(f"账号 {username} 所有目标好友均已找到，停止搜索")
-                        return
-                    break
+                        # [修改] 标记已找到，如果全找到了直接退出
+                        if targetSymbol in remaining_targets:
+                            remaining_targets.remove(targetSymbol)
+                        if len(remaining_targets) == 0:
+                            logger.debug(f"账号 {username} 所有目标好友均已找到，停止搜索")
+                            return
+                        break
+                    continue
             except Exception as e:
                 traceback.print_exc()
         else:
@@ -672,7 +723,8 @@ def do_user_task(browser, username, cookies, targets):
         logger.debug(f"账号 {username} 已选中好友 {username} 发送消息")
         # 等待聊天输入框元素加载完成，使用更稳定的属性选择器
         chat_input_selector = CHAT_EDITOR_SELECTOR
-        page.wait_for_selector(chat_input_selector, timeout=config["browserTimeout"])
+        if not wait_for_chat_editor(page, username, username):
+            continue
         chat_input = page.locator(chat_input_selector)
 
         # 在 chat-input-dccKiL 中输入内容

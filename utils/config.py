@@ -63,6 +63,9 @@ def get_config():
         "chatSearchActionTimeout": int(
             os.getenv("CHAT_SEARCH_ACTION_TIMEOUT", "5000")
         ),  # 聊天搜索框单次操作超时时间，单位毫秒
+        "chatOpenTimeout": int(
+            os.getenv("CHAT_OPEN_TIMEOUT", "10000")
+        ),  # 选择好友后等待聊天输入框出现的超时时间，单位毫秒
         "taskRetryTimes": int(os.getenv("TASK_RETRY_TIMES", "3")),  # 任务重试次数
         "logLevel": os.getenv("LOG_LEVEL", "DEBUG"),  # 日志级别
         "debugUserIDMapping": os.getenv("DEBUG_USERID_MAPPING", "") == "1",

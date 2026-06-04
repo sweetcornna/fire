@@ -28,16 +28,20 @@ class _ConversationItem:
 
 
 class _Locator:
-    def __init__(self, page, selector):
+    def __init__(self, page, selector, index=None):
         self.page = page
         self.selector = selector
+        self.index = index
         self.broken = False
-        if "input" in self.selector or "搜索" in self.selector:
+        if self._is_search() and self.index is not None:
             self.page.search_locator_creations += 1
             self.broken = (
                 self.page.fail_first_search_locator
                 and self.page.search_locator_creations == 1
             )
+
+    def _is_search(self):
+        return "input" in self.selector or "搜索" in self.selector
 
     def all(self):
         if self.selector == tasks.CONVERSATION_ITEM_SELECTOR:
@@ -53,15 +57,24 @@ class _Locator:
         return None
 
     def count(self):
-        if "input" in self.selector or "搜索" in self.selector:
-            return 1
+        if self._is_search():
+            return len(self.page.search_boxes)
         return 0
 
     def nth(self, index):
-        return self
+        return _Locator(self.page, self.selector, index=index)
 
     def is_visible(self):
+        if self._is_search() and self.index is not None:
+            return self.page.search_boxes[self.index] is not None
         return True
+
+    def bounding_box(self):
+        if self.selector == tasks.CONVERSATION_LIST_SELECTOR:
+            return self.page.list_box
+        if self._is_search() and self.index is not None:
+            return self.page.search_boxes[self.index]
+        return None
 
     def click(self, *args, **kwargs):
         if self.broken:
@@ -72,6 +85,7 @@ class _Locator:
         if self.broken:
             raise RuntimeError("stale search input")
         self.page.search_terms.append(value)
+        self.page.search_term_indexes.append(self.index)
         self.page.titles = self.page.search_results.get(value, [])
 
     def press(self, key, *args, **kwargs):
@@ -82,6 +96,7 @@ class _Locator:
         if self.broken:
             raise RuntimeError("stale search input")
         self.page.search_terms.append(value)
+        self.page.search_term_indexes.append(self.index)
         self.page.titles = self.page.search_results.get(value, [])
 
 
@@ -93,15 +108,24 @@ class _Page:
         search_results=None,
         max_scroll_top=None,
         fail_first_search_locator=False,
+        search_boxes=None,
+        list_box=None,
+        chat_editor_available=True,
     ):
         self.titles = titles
         self.after_first_scroll = after_first_scroll
         self.search_results = search_results or {}
         self.max_scroll_top = max_scroll_top
         self.search_terms = []
+        self.search_term_indexes = []
         self.search_clicks = 0
         self.search_locator_creations = 0
         self.fail_first_search_locator = fail_first_search_locator
+        self.search_boxes = search_boxes or [
+            {"x": 0, "y": 0, "width": 100, "height": 30}
+        ]
+        self.list_box = list_box or {"x": 0, "y": 40, "width": 300, "height": 600}
+        self.chat_editor_available = chat_editor_available
         self.clicked_titles = []
         self.scroll_top = 0
         self.scrolls = 0
@@ -129,6 +153,11 @@ class _Page:
         if "scrollTop" in script:
             return self.scroll_top
         return None
+
+    def wait_for_selector(self, selector, timeout=None):
+        if selector == tasks.CHAT_EDITOR_SELECTOR and not self.chat_editor_available:
+            raise RuntimeError("chat editor unavailable")
+        return True
 
 
 class FriendMatchingTests(unittest.TestCase):
@@ -249,6 +278,22 @@ class FriendMatchingTests(unittest.TestCase):
 
         self.assertEqual(matched, {"兴隆竹🏵️": "熊霖竹"})
         self.assertEqual(unmatched, ["漏发好友"])
+
+    def test_find_search_input_prefers_sidebar_search_near_conversation_list(self):
+        page = _Page(
+            [],
+            after_first_scroll=lambda: None,
+            search_boxes=[
+                {"x": 500, "y": 10, "width": 300, "height": 36},
+                {"x": 16, "y": 110, "width": 260, "height": 36},
+            ],
+            list_box={"x": 0, "y": 156, "width": 320, "height": 600},
+        )
+
+        search_input = tasks.find_search_input(page)
+        search_input.fill("目标")
+
+        self.assertEqual(page.search_term_indexes[-1], 1)
 
     def test_search_reacquires_input_after_failed_term(self):
         tasks.userIDDict["备用名"] = [
