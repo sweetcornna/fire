@@ -1,4 +1,5 @@
 import traceback
+import re
 from utils.logger import setup_logger
 from utils.config import get_config, get_userData
 from utils import norm
@@ -26,6 +27,7 @@ SEARCH_INPUT_SELECTORS = (
     '[contains(@placeholder, "搜索") or contains(@aria-label, "搜索") '
     'or contains(@data-placeholder, "搜索")]',
 )
+USER_NUMBER_TARGET_RE = re.compile(r"^用户(\d+)$")
 
 
 def _norm_value(value) -> str:
@@ -58,6 +60,9 @@ def _iter_user_records():
 def get_search_terms_for_target(target):
     target = _norm_value(target)
     terms = [target]
+    user_number_match = USER_NUMBER_TARGET_RE.match(target)
+    if user_number_match:
+        terms.append(user_number_match.group(1))
 
     for values in _iter_user_records():
         short_id, unique_id, sec_uid, nickname, remark_name = (values + [""] * 5)[:5]
@@ -172,6 +177,8 @@ def fill_search_input(search_input, value):
 def click_matching_visible_user(page, username, targets):
     for element in page.locator(CONVERSATION_ITEM_SELECTOR).all():
         try:
+            if hasattr(element, "is_visible") and not element.is_visible():
+                continue
             targetName = _norm_value(
                 element.locator(CONVERSATION_TITLE_SELECTOR).inner_text()
             )
@@ -284,7 +291,7 @@ def scroll_and_select_user(page, username, targets):
                     found_targets.add(targetName)
                     logger.debug(f"账号 {username} 找到好友 {targetName}")
                 
-                targetSymbol = checkTargetName(targetName, targets)
+                targetSymbol = checkTargetName(targetName, remaining_targets)
 
                 if targetSymbol:
                     element.click()
