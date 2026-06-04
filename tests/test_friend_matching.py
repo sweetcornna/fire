@@ -1,0 +1,129 @@
+import unittest
+
+import core.tasks as tasks
+
+
+class _TitleLocator:
+    def __init__(self, text):
+        self.text = text
+
+    def inner_text(self):
+        return self.text
+
+
+class _ConversationItem:
+    def __init__(self, page, title):
+        self.page = page
+        self.title = title
+
+    def locator(self, selector):
+        return _TitleLocator(self.title)
+
+    def click(self):
+        self.page.clicked_titles.append(self.title)
+
+
+class _Locator:
+    def __init__(self, page, selector):
+        self.page = page
+        self.selector = selector
+
+    def all(self):
+        if self.selector == tasks.CONVERSATION_ITEM_SELECTOR:
+            return [_ConversationItem(self.page, title) for title in self.page.titles]
+        return []
+
+    def element_handle(self):
+        if self.selector == tasks.CONVERSATION_LIST_SELECTOR:
+            return object()
+        return None
+
+    def count(self):
+        if "input" in self.selector or "搜索" in self.selector:
+            return 1
+        return 0
+
+    def nth(self, index):
+        return self
+
+    def is_visible(self):
+        return True
+
+    def click(self):
+        self.page.search_clicks += 1
+
+    def fill(self, value):
+        self.page.search_terms.append(value)
+        self.page.titles = self.page.search_results.get(value, [])
+
+
+class _Page:
+    def __init__(self, titles, after_first_scroll, search_results=None):
+        self.titles = titles
+        self.after_first_scroll = after_first_scroll
+        self.search_results = search_results or {}
+        self.search_terms = []
+        self.search_clicks = 0
+        self.clicked_titles = []
+        self.scroll_top = 0
+        self.scrolls = 0
+
+    def locator(self, selector):
+        return _Locator(self, selector)
+
+    def evaluate(self, script, element):
+        if "scrollTop +=" in script:
+            self.scrolls += 1
+            self.scroll_top += 800
+            if self.scrolls == 1:
+                self.after_first_scroll()
+            return None
+        if "scrollTop" in script:
+            return self.scroll_top
+        return None
+
+
+class FriendMatchingTests(unittest.TestCase):
+    def setUp(self):
+        self._sleep = tasks.time.sleep
+        self._user_id_dict = tasks.userIDDict
+        tasks.time.sleep = lambda _seconds: None
+        tasks.userIDDict = {}
+
+    def tearDown(self):
+        tasks.time.sleep = self._sleep
+        tasks.userIDDict = self._user_id_dict
+
+    def test_scroll_rechecks_seen_friend_after_api_mapping_arrives(self):
+        def add_mapping():
+            tasks.userIDDict["熊霖竹"] = [
+                "20060941610",
+                "20060941610",
+                "",
+                "兴隆竹🏵️",
+                "熊霖竹",
+            ]
+
+        page = _Page(["熊霖竹"], after_first_scroll=add_mapping)
+
+        selected = next(tasks.scroll_and_select_user(page, "主账号", ["兴隆竹🏵️"]))
+
+        self.assertEqual(selected, "兴隆竹🏵️")
+        self.assertEqual(page.clicked_titles, ["熊霖竹"])
+
+    def test_scroll_searches_remaining_target_after_list_reaches_bottom(self):
+        page = _Page(
+            ["其他好友"],
+            after_first_scroll=lambda: None,
+            search_results={"学姐说保研": ["学姐说保研"]},
+        )
+
+        selected = next(tasks.scroll_and_select_user(page, "主账号", ["学姐说保研"]))
+
+        self.assertEqual(selected, "学姐说保研")
+        self.assertIn("学姐说保研", page.search_terms)
+        self.assertEqual(page.clicked_titles, ["学姐说保研"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -17,6 +17,54 @@ CONVERSATION_ITEM_SELECTOR = ".conversationConversationItemwrapper"
 CONVERSATION_TITLE_SELECTOR = ".conversationConversationItemtitle"
 CONVERSATION_LIST_SELECTOR = ".conversationConversationListwrapper"
 CHAT_EDITOR_SELECTOR = ".messageEditorimChatEditorContainer"
+SEARCH_INPUT_SELECTORS = (
+    'input[placeholder*="搜索"]',
+    'input[aria-label*="搜索"]',
+    '[contenteditable="true"][placeholder*="搜索"]',
+    '[contenteditable="true"][aria-label*="搜索"]',
+    'xpath=//*[self::input or @contenteditable="true"]'
+    '[contains(@placeholder, "搜索") or contains(@aria-label, "搜索") '
+    'or contains(@data-placeholder, "搜索")]',
+)
+
+
+def _norm_value(value) -> str:
+    if value is None:
+        return ""
+    return norm(str(value))
+
+
+def _dedupe(values):
+    seen = set()
+    result = []
+    for value in values:
+        value = _norm_value(value)
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _iter_user_records():
+    seen = set()
+    for values in userIDDict.values():
+        record = tuple(_norm_value(value) for value in values)
+        if record in seen:
+            continue
+        seen.add(record)
+        yield list(record)
+
+
+def get_search_terms_for_target(target):
+    target = _norm_value(target)
+    terms = [target]
+
+    for values in _iter_user_records():
+        short_id, unique_id, sec_uid, nickname, remark_name = (values + [""] * 5)[:5]
+        if target in {short_id, unique_id, sec_uid, nickname, remark_name}:
+            terms.extend([remark_name, nickname, unique_id, short_id])
+
+    return _dedupe(terms)
 
 
 def handle_response(response: Response):
@@ -34,12 +82,15 @@ def handle_response(response: Response):
             # print("\n📦 响应 JSON 数据：")
             # print(json.dumps(json_data, indent=4, ensure_ascii=False))
             for item in json_data.get("data", []):
-                short_id = item.get("short_id")
-                unique_id = item.get("unique_id")
-                sec_uid = item.get("sec_uid", "")
-                nickname = norm(item.get("nickname"))
-                remark_name = norm(item.get("remark_name", nickname))
-                userIDDict[remark_name] = [short_id, unique_id, sec_uid, nickname, remark_name]
+                short_id = _norm_value(item.get("short_id"))
+                unique_id = _norm_value(item.get("unique_id"))
+                sec_uid = _norm_value(item.get("sec_uid", ""))
+                nickname = _norm_value(item.get("nickname"))
+                remark_name = _norm_value(item.get("remark_name", nickname))
+                values = [short_id, unique_id, sec_uid, nickname, remark_name]
+                for key in {nickname, remark_name}:
+                    if key:
+                        userIDDict[key] = values
         except Exception as e:
             tb = traceback.extract_tb(e.__traceback__)
             last = tb[-1]
@@ -74,16 +125,88 @@ def checkTargetName(targetName, targets):
     
     targetSymbol = None
     
-    targetName = norm(targetName)
+    targetName = _norm_value(targetName)
     
+    target_set = {_norm_value(t) for t in targets}
+
     if targetName in userIDDict:
-        matched = next((v for v in userIDDict[targetName] if v and v in targets), None)
+        matched = next(
+            (_norm_value(v) for v in userIDDict[targetName] if _norm_value(v) in target_set),
+            None,
+        )
         if matched is not None:
             targetSymbol = matched
     else:
-        if targetName in targets:
+        if targetName in target_set:
             targetSymbol = targetName
     return targetSymbol
+
+
+def find_search_input(page):
+    for selector in SEARCH_INPUT_SELECTORS:
+        try:
+            locator = page.locator(selector)
+            for index in range(locator.count()):
+                candidate = locator.nth(index)
+                if candidate.is_visible():
+                    return candidate
+        except Exception:
+            continue
+    return None
+
+
+def fill_search_input(search_input, value):
+    search_input.click()
+    try:
+        search_input.fill(value)
+    except Exception:
+        search_input.press("Control+A")
+        search_input.type(value)
+
+
+def click_matching_visible_user(page, username, targets):
+    for element in page.locator(CONVERSATION_ITEM_SELECTOR).all():
+        try:
+            targetName = _norm_value(
+                element.locator(CONVERSATION_TITLE_SELECTOR).inner_text()
+            )
+            if not targetName:
+                continue
+            logger.debug(f"账号 {username} 搜索结果好友 {targetName}")
+            targetSymbol = checkTargetName(targetName, targets)
+            if targetSymbol:
+                element.click()
+                return targetSymbol
+        except Exception:
+            traceback.print_exc()
+    return None
+
+
+def search_and_select_target(page, username, target):
+    search_input = find_search_input(page)
+    if not search_input:
+        logger.warning(f"账号 {username} 未找到聊天搜索框，无法搜索目标好友 {target}")
+        return None
+
+    for term in get_search_terms_for_target(target):
+        try:
+            logger.debug(f"账号 {username} 搜索目标好友 {target}，搜索词: {term}")
+            fill_search_input(search_input, term)
+            time.sleep(config["friendListTimeout"] / 1000)
+            targetSymbol = click_matching_visible_user(page, username, [target])
+            if targetSymbol:
+                return targetSymbol
+        except Exception:
+            traceback.print_exc()
+
+    return None
+
+
+def search_remaining_targets(page, username, remaining_targets):
+    for target in list(remaining_targets):
+        targetSymbol = search_and_select_target(page, username, target)
+        if targetSymbol:
+            yield targetSymbol
 
 
 def scroll_and_select_user(page, username, targets):
@@ -121,11 +244,9 @@ def scroll_and_select_user(page, username, targets):
                 span = element.locator(CONVERSATION_TITLE_SELECTOR)
                 targetName = span.inner_text()
 
-                if targetName in found_targets:
-                    continue  # 已处理过，跳过
-                found_targets.add(targetName)
-
-                logger.debug(f"账号 {username} 找到好友 {targetName}")
+                if targetName not in found_targets:
+                    found_targets.add(targetName)
+                    logger.debug(f"账号 {username} 找到好友 {targetName}")
                 
                 targetSymbol = checkTargetName(targetName, targets)
 
@@ -167,6 +288,15 @@ def scroll_and_select_user(page, username, targets):
                 logger.warning(
                     f"账号 {username} 连续 {MAX_EMPTY_SCROLLS} 次滚动未发现新好友，判定已到达底部"
                 )
+                for targetSymbol in search_remaining_targets(
+                    page, username, remaining_targets
+                ):
+                    yield targetSymbol
+                    if targetSymbol in remaining_targets:
+                        remaining_targets.remove(targetSymbol)
+                    if len(remaining_targets) == 0:
+                        logger.debug(f"账号 {username} 所有目标好友均已找到，停止搜索")
+                        return
                 if len(remaining_targets) > 0:
                     logger.warning(
                         f"账号 {username} 搜索结束，仍有以下好友未找到: {remaining_targets}"
