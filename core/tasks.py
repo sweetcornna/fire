@@ -32,6 +32,7 @@ SEARCH_INPUT_SELECTORS = (
 USER_NUMBER_TARGET_RE = re.compile(r"^用户(\d+)$")
 MAX_USER_SEARCH_SNIPPETS = 40
 MAX_EMPTY_SCROLLS = 10
+DEFAULT_SEARCH_ACTION_TIMEOUT_MS = 5000
 
 
 def _norm_value(value) -> str:
@@ -388,15 +389,26 @@ def find_search_input(page):
     return None
 
 
+def _locator_action(locator, action, *args, timeout=None):
+    method = getattr(locator, action)
+    try:
+        if timeout is not None:
+            return method(*args, timeout=timeout)
+        return method(*args)
+    except TypeError:
+        return method(*args)
+
+
 def fill_search_input(search_input, value):
-    search_input.click()
+    timeout = config.get("chatSearchActionTimeout", DEFAULT_SEARCH_ACTION_TIMEOUT_MS)
+    _locator_action(search_input, "click", timeout=timeout)
     try:
-        search_input.fill(value)
+        _locator_action(search_input, "fill", value, timeout=timeout)
     except Exception:
-        search_input.press("Control+A")
-        search_input.type(value)
+        _locator_action(search_input, "press", "Control+A", timeout=timeout)
+        _locator_action(search_input, "type", value, timeout=timeout)
     try:
-        search_input.press("Enter")
+        _locator_action(search_input, "press", "Enter", timeout=timeout)
     except Exception:
         pass
 
@@ -449,14 +461,13 @@ def click_visible_text_result(page, username, target, terms):
 
 
 def search_and_select_target(page, username, target):
-    search_input = find_search_input(page)
-    if not search_input:
-        logger.warning(f"账号 {username} 未找到聊天搜索框，无法搜索目标好友 {target}")
-        return None
-
     terms = get_search_terms_for_target(target)
     for term in terms:
         try:
+            search_input = find_search_input(page)
+            if not search_input:
+                logger.warning(f"账号 {username} 未找到聊天搜索框，无法搜索目标好友 {target}")
+                return None
             logger.debug(f"账号 {username} 搜索目标好友 {target}，搜索词: {term}")
             fill_search_input(search_input, term)
             time.sleep(config["friendListTimeout"] / 1000)

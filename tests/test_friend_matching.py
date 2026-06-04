@@ -31,6 +31,13 @@ class _Locator:
     def __init__(self, page, selector):
         self.page = page
         self.selector = selector
+        self.broken = False
+        if "input" in self.selector or "搜索" in self.selector:
+            self.page.search_locator_creations += 1
+            self.broken = (
+                self.page.fail_first_search_locator
+                and self.page.search_locator_creations == 1
+            )
 
     def all(self):
         if self.selector == tasks.CONVERSATION_ITEM_SELECTOR:
@@ -56,10 +63,24 @@ class _Locator:
     def is_visible(self):
         return True
 
-    def click(self):
+    def click(self, *args, **kwargs):
+        if self.broken:
+            raise RuntimeError("stale search input")
         self.page.search_clicks += 1
 
-    def fill(self, value):
+    def fill(self, value, *args, **kwargs):
+        if self.broken:
+            raise RuntimeError("stale search input")
+        self.page.search_terms.append(value)
+        self.page.titles = self.page.search_results.get(value, [])
+
+    def press(self, key, *args, **kwargs):
+        if self.broken:
+            raise RuntimeError("stale search input")
+
+    def type(self, value, *args, **kwargs):
+        if self.broken:
+            raise RuntimeError("stale search input")
         self.page.search_terms.append(value)
         self.page.titles = self.page.search_results.get(value, [])
 
@@ -71,6 +92,7 @@ class _Page:
         after_first_scroll,
         search_results=None,
         max_scroll_top=None,
+        fail_first_search_locator=False,
     ):
         self.titles = titles
         self.after_first_scroll = after_first_scroll
@@ -78,6 +100,8 @@ class _Page:
         self.max_scroll_top = max_scroll_top
         self.search_terms = []
         self.search_clicks = 0
+        self.search_locator_creations = 0
+        self.fail_first_search_locator = fail_first_search_locator
         self.clicked_titles = []
         self.scroll_top = 0
         self.scrolls = 0
@@ -225,6 +249,28 @@ class FriendMatchingTests(unittest.TestCase):
 
         self.assertEqual(matched, {"兴隆竹🏵️": "熊霖竹"})
         self.assertEqual(unmatched, ["漏发好友"])
+
+    def test_search_reacquires_input_after_failed_term(self):
+        tasks.userIDDict["备用名"] = [
+            "target-id",
+            "target-id",
+            "",
+            "备用名",
+            "备用名",
+        ]
+        page = _Page(
+            [],
+            after_first_scroll=lambda: None,
+            search_results={"备用名": ["备用名"]},
+            fail_first_search_locator=True,
+        )
+
+        selected = tasks.search_and_select_target(page, "主账号", "target-id")
+
+        self.assertEqual(selected, "target-id")
+        self.assertEqual(page.clicked_titles, ["备用名"])
+        self.assertIn("备用名", page.search_terms)
+        self.assertGreaterEqual(page.search_locator_creations, 2)
 
 
 if __name__ == "__main__":
