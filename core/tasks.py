@@ -63,11 +63,13 @@ def get_search_terms_for_target(target):
     user_number_match = USER_NUMBER_TARGET_RE.match(target)
     if user_number_match:
         terms.append(user_number_match.group(1))
+    term_set = set(terms)
 
     for values in _iter_user_records():
         short_id, unique_id, sec_uid, nickname, remark_name = (values + [""] * 5)[:5]
-        if target in {short_id, unique_id, sec_uid, nickname, remark_name}:
+        if term_set & {short_id, unique_id, sec_uid, nickname, remark_name}:
             terms.extend([remark_name, nickname, unique_id, short_id])
+            term_set.update(_dedupe(terms))
 
     return _dedupe(terms)
 
@@ -131,19 +133,32 @@ def checkTargetName(targetName, targets):
     targetSymbol = None
     
     targetName = _norm_value(targetName)
-    
-    target_set = {_norm_value(t) for t in targets}
+    target_aliases = [
+        (_norm_value(target), set(get_search_terms_for_target(target)))
+        for target in targets
+    ]
 
     if targetName in userIDDict:
+        values = {_norm_value(v) for v in userIDDict[targetName]}
         matched = next(
-            (_norm_value(v) for v in userIDDict[targetName] if _norm_value(v) in target_set),
+            (
+                target
+                for target, aliases in target_aliases
+                if values & aliases or targetName in aliases
+            ),
             None,
         )
-        if matched is not None:
+        if matched:
             targetSymbol = matched
     else:
-        if targetName in target_set:
-            targetSymbol = targetName
+        targetSymbol = next(
+            (
+                target
+                for target, aliases in target_aliases
+                if targetName in aliases
+            ),
+            None,
+        )
     return targetSymbol
 
 

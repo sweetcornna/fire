@@ -162,6 +162,24 @@ class FriendMatchingTests(unittest.TestCase):
             ["用户2061764921260", "2061764921260"],
         )
 
+    def test_user_number_target_matches_current_name_from_api_alias(self):
+        tasks.userIDDict["涵老师"] = [
+            "",
+            "2061764921260",
+            "",
+            "涵老师",
+            "涵老师",
+        ]
+
+        self.assertEqual(
+            tasks.get_search_terms_for_target("用户2061764921260"),
+            ["用户2061764921260", "2061764921260", "涵老师"],
+        )
+        self.assertEqual(
+            tasks.checkTargetName("涵老师", ["用户2061764921260"]),
+            "用户2061764921260",
+        )
+
     def test_scroll_does_not_select_already_completed_target_again(self):
         tasks.userIDDict["重复好友"] = [
             "target-a",
