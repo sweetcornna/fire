@@ -25,6 +25,34 @@ class _ConversationItem:
 
     def click(self):
         self.page.clicked_titles.append(self.title)
+        self.page.chat_header_text = self.title
+
+
+class _TextCandidate:
+    def __init__(self, page, text, visible=True):
+        self.page = page
+        self.text = text
+        self.visible = visible
+
+    def is_visible(self):
+        return self.visible
+
+    def click(self):
+        self.page.clicked_text_results.append(self.text)
+        if self.text in self.page.text_result_chat_headers:
+            self.page.chat_header_text = self.page.text_result_chat_headers[self.text]
+
+
+class _TextLocator:
+    def __init__(self, page, text):
+        self.page = page
+        self.text = text
+
+    def count(self):
+        return len(self.page.text_results.get(self.text, []))
+
+    def nth(self, index):
+        return self.page.text_results[self.text][index]
 
 
 class _Locator:
@@ -111,6 +139,9 @@ class _Page:
         search_boxes=None,
         list_box=None,
         chat_editor_available=True,
+        chat_header_text="",
+        text_results=None,
+        text_result_chat_headers=None,
     ):
         self.titles = titles
         self.after_first_scroll = after_first_scroll
@@ -126,6 +157,15 @@ class _Page:
         ]
         self.list_box = list_box or {"x": 0, "y": 40, "width": 300, "height": 600}
         self.chat_editor_available = chat_editor_available
+        self.chat_header_text = chat_header_text
+        self.text_result_chat_headers = text_result_chat_headers or {}
+        self.clicked_text_results = []
+        self.text_results = {}
+        for text, results in (text_results or {}).items():
+            self.text_results[text] = [
+                _TextCandidate(self, result) if isinstance(result, str) else result
+                for result in results
+            ]
         self.clicked_titles = []
         self.scroll_top = 0
         self.scrolls = 0
@@ -141,6 +181,11 @@ class _Page:
         return _Locator(self, selector)
 
     def evaluate(self, script, element):
+        if isinstance(element, dict) and "terms" in element:
+            terms = [tasks._norm_value(term) for term in element["terms"]]
+            header = tasks._norm_value(self.chat_header_text)
+            matched = any(term and term in header for term in terms)
+            return {"matched": matched, "snippets": [header] if matched else []}
         if "scrollTop +=" in script:
             self.scrolls += 1
             next_scroll_top = self.scroll_top + 800
@@ -158,6 +203,9 @@ class _Page:
         if selector == tasks.CHAT_EDITOR_SELECTOR and not self.chat_editor_available:
             raise RuntimeError("chat editor unavailable")
         return True
+
+    def get_by_text(self, text, exact=True):
+        return _TextLocator(self, text)
 
 
 class FriendMatchingTests(unittest.TestCase):
@@ -316,6 +364,57 @@ class FriendMatchingTests(unittest.TestCase):
         self.assertEqual(page.clicked_titles, ["备用名"])
         self.assertIn("备用名", page.search_terms)
         self.assertGreaterEqual(page.search_locator_creations, 2)
+
+    def test_text_result_does_not_select_when_chat_header_stays_on_previous_user(self):
+        tasks.userIDDict["黑眼圈"] = [
+            "1369556832",
+            "",
+            "",
+            "黑眼圈",
+            "黑眼圈",
+        ]
+        page = _Page(
+            [],
+            after_first_scroll=lambda: None,
+            chat_header_text="熊霖竹",
+            text_results={"黑眼圈": ["黑眼圈"]},
+        )
+
+        selected = tasks.click_visible_text_result(
+            page,
+            "主账号",
+            "1369556832",
+            ["1369556832", "黑眼圈"],
+        )
+
+        self.assertIsNone(selected)
+        self.assertEqual(page.clicked_text_results, ["黑眼圈"])
+
+    def test_text_result_selects_after_chat_header_switches_to_target(self):
+        tasks.userIDDict["黑眼圈"] = [
+            "1369556832",
+            "",
+            "",
+            "黑眼圈",
+            "黑眼圈",
+        ]
+        page = _Page(
+            [],
+            after_first_scroll=lambda: None,
+            chat_header_text="熊霖竹",
+            text_results={"黑眼圈": ["黑眼圈"]},
+            text_result_chat_headers={"黑眼圈": "黑眼圈"},
+        )
+
+        selected = tasks.click_visible_text_result(
+            page,
+            "主账号",
+            "1369556832",
+            ["1369556832", "黑眼圈"],
+        )
+
+        self.assertEqual(selected, "1369556832")
+        self.assertEqual(page.clicked_text_results, ["黑眼圈"])
 
 
 if __name__ == "__main__":

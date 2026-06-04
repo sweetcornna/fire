@@ -427,14 +427,79 @@ def find_search_input(page):
     return None
 
 
+def _chat_target_match(page, target):
+    terms = get_search_terms_for_target(target)
+    try:
+        result = page.evaluate(
+            """
+            ({ listSelector, editorSelector, terms }) => {
+                const normalize = (value) => (value || '')
+                    .normalize('NFKC')
+                    .replace(/[\\u3000\\u00a0]/g, ' ')
+                    .replace(/[\\u200b\\ufeff]/g, '')
+                    .replace(/\\s+/g, ' ')
+                    .trim();
+                const normalizedTerms = terms.map(normalize).filter(Boolean);
+                const list = document.querySelector(listSelector);
+                const editor = document.querySelector(editorSelector);
+                const listRect = list ? list.getBoundingClientRect() : null;
+                const editorRect = editor ? editor.getBoundingClientRect() : null;
+                const rightPaneStart = listRect ? listRect.right : window.innerWidth * 0.3;
+                const editorTop = editorRect ? editorRect.top : window.innerHeight;
+                const snippets = [];
+
+                for (const element of document.querySelectorAll('h1,h2,h3,div,span,a,button')) {
+                    const rect = element.getBoundingClientRect();
+                    if (!rect || rect.width <= 0 || rect.height <= 0) {
+                        continue;
+                    }
+                    if (rect.right <= rightPaneStart || rect.bottom > editorTop + 24) {
+                        continue;
+                    }
+
+                    const text = normalize(element.innerText || element.textContent || '');
+                    if (!text || text.length > 160) {
+                        continue;
+                    }
+                    if (normalizedTerms.some((term) => text.includes(term))) {
+                        snippets.push(text.slice(0, 160));
+                        if (snippets.length >= 5) {
+                            break;
+                        }
+                    }
+                }
+
+                return { matched: snippets.length > 0, snippets };
+            }
+            """,
+            {
+                "listSelector": CONVERSATION_LIST_SELECTOR,
+                "editorSelector": CHAT_EDITOR_SELECTOR,
+                "terms": terms,
+            },
+        )
+    except Exception:
+        traceback.print_exc()
+        return False, []
+    return bool(result.get("matched")), result.get("snippets", [])
+
+
 def wait_for_chat_editor(page, username, target, timeout=None):
     timeout = timeout or config.get("chatOpenTimeout", DEFAULT_CHAT_OPEN_TIMEOUT_MS)
     try:
         page.wait_for_selector(CHAT_EDITOR_SELECTOR, timeout=timeout)
-        return True
     except Exception as error:
         logger.warning(f"账号 {username} 选择好友 {target} 后聊天输入框未出现: {error}")
         return False
+    matched, snippets = _chat_target_match(page, target)
+    if matched:
+        logger.debug(f"账号 {username} 已确认当前聊天为 {target}: {snippets}")
+        return True
+    logger.warning(
+        f"账号 {username} 选择好友 {target} 后当前聊天标题未匹配目标，"
+        f"搜索词 {get_search_terms_for_target(target)}，可见候选 {snippets}"
+    )
+    return False
 
 
 def _locator_action(locator, action, *args, timeout=None):
