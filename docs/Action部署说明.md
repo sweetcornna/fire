@@ -53,6 +53,30 @@
 
 ![配置生成器](images/配置生成器.png)
 
+## 4.1 启用 AI 生成消息（可选，推荐）
+
+默认情况下消息走「模板 + 一言」生成。如果希望每天由 AI 现写一句**暖心祝福语**（更自然、不重复、不查户口），在 `user-data` 环境中追加下列配置即可。未配置时会自动回落模板，不影响运行。
+
+在 `Settings` -> `Environments` -> `user-data` -> `Environment variables` 中新增：
+
+| 变量名 | 值 | 说明 |
+| --- | --- | --- |
+| `OPENAI_BASE_URL` | `https://api.cornna.xyz/v1` | OpenAI 兼容接口地址；不带 `/v1` 也行，程序会自动补全 |
+| `OPENAI_MODEL` | `claude-sonnet-4-6` | 使用的模型 |
+| `MESSAGE_AI_ENABLE` | `1` | `1` 强制开启 AI；`0` 关闭；留空表示有 key 即自动开启 |
+
+在 `Environment secrets` 中新增：
+
+| 密钥名 | 值 | 说明 |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | `你的 API Key` | 必须放在 Secrets，切勿填到 Variables |
+
+说明：
+
+- **`OPENAI_API_KEY` 只能放 Secrets**，不要写进 Variables、代码或任何会提交的文件。
+- 选择模型前请确认它在你的接口上可用。例如 Gemini 系列若上游有「User location is not supported」地区限制会调用失败（自动回落模板），可改用 `claude-sonnet-4-6` 等可用模型。
+- 还可选配 `MESSAGE_AI_PERSONAS`（JSON 数组）自定义祝福角度；不配则用内置的 5 个祝福风格逐日轮换。
+
 ## 5. 修改执行时间（可选）
 
 如需调整自动执行时间，编辑仓库文件 `.github/workflows/schedule.yml`，找到下方配置：

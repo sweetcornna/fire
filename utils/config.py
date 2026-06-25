@@ -34,6 +34,17 @@ def get_environment():
         return Environment.LOCAL
 
 
+def _parse_json_list(value):
+    """把环境变量里的 JSON 数组解析为 list；为空或非法时返回 None。"""
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, list) else None
+
+
 def get_config():
     """
     获取配置信息
@@ -46,10 +57,21 @@ def get_config():
 
     config = {
         "proxyAddress": os.getenv("PROXY_ADDRESS", ""),
-        "messageTemplate": os.getenv(
-            "MESSAGE_TEMPLATE",
-            "[盖瑞]今日火花[加一]\\n—— [右边] 每日一言 [左边] ——\\n[API]",
-        ),
+        # 旧版单一模板：留空表示「未显式设置」，由 forms.resolve_templates 回落到默认模板池
+        "messageTemplate": os.getenv("MESSAGE_TEMPLATE", ""),
+        # 模板轮换池（JSON 数组）；优先级高于旧版单一模板
+        "messageTemplates": _parse_json_list(os.getenv("MESSAGE_TEMPLATES")),
+        # 形式选择方式：daily-rotate（默认，逐日轮换）| random
+        "messageSelectionMode": os.getenv("MESSAGE_SELECTION_MODE", "daily-rotate"),
+        # AI 生成开关："" 自动（有 key 即开）| "1" 强制开 | "0" 强制关
+        "aiEnable": os.getenv("MESSAGE_AI_ENABLE", ""),
+        # AI persona 池（JSON 数组，可选；为空则用 forms.DEFAULT_PERSONAS）
+        "aiPersonas": _parse_json_list(os.getenv("MESSAGE_AI_PERSONAS")),
+        "openai": {
+            "api_key": os.getenv("OPENAI_API_KEY", ""),
+            "base_url": os.getenv("OPENAI_BASE_URL", ""),
+            "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        },
         "hitokotoTypes": json.loads(
             os.getenv("HITOKOTO_TYPES", '["文学","影视","诗词","哲学"]')
         ),

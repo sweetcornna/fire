@@ -5,7 +5,8 @@ from urllib.parse import quote
 from utils.logger import setup_logger
 from utils.config import get_config, get_userData
 from utils import norm
-from core.msg_builder import build_message, build_message_with_openai
+from core.msg_builder import build_message
+from core.forms import resolve_templates, ai_enabled
 from core.browser import get_browser
 from playwright.sync_api import Response
 import time
@@ -816,7 +817,9 @@ def runTasks():
         # 创建信号量以限制并发任务数量
         logger.info("开始执行任务")
         logger.debug(f"当前配置如下：")
-        logger.debug(f"消息模板: {config.get('messageTemplate', '未找到消息模板')}")
+        logger.debug(f"形式选择模式: {config.get('messageSelectionMode', 'daily-rotate')}")
+        logger.debug(f"模板池数量: {len(resolve_templates(config))}")
+        logger.debug(f"AI 生成: {'启用' if ai_enabled(config) else '未启用'}")
         logger.debug(f"一言类型: {config['hitokotoTypes']}")
         for user in userData:
             logger.debug(
