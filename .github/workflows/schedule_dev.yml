@@ -5,6 +5,7 @@ on:
   workflow_dispatch: # 由外部服务器 cron 触发；移除 GitHub 原生 schedule 以避免双重触发导致重复发消息
 jobs:
   run-main:
+    if: github.ref_name == 'dev'
     timeout-minutes: 20
     runs-on: ubuntu-latest
     environment: user-data
