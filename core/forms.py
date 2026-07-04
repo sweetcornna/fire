@@ -115,29 +115,30 @@ def ai_enabled(config) -> bool:
         return False
     if flag == "1":
         return True  # 强制开启：即便无 key 也会尝试 -> 失败 -> 兜底
-    return bool(config.get("openai", {}).get("api_key"))
+    return bool(config.get("anthropic", {}).get("api_key"))
 
 
-def normalize_openai_base_url(base_url: str):
+def normalize_anthropic_base_url(base_url: str):
+    """归一化 Anthropic 网关根地址：去掉结尾的 /v1（SDK 会自动补 /v1/messages）。"""
     if not base_url:
         return None
     base_url = base_url.rstrip("/")
     if base_url.endswith("/v1"):
-        return base_url
-    return f"{base_url}/v1"
+        base_url = base_url[: -len("/v1")]
+    return base_url
 
 
 def build_ai_message(today: date, config) -> str:
-    """调用 OpenAI 现写一句续火花消息。失败/空返回时抛异常以触发兜底。"""
-    from openai import OpenAI
+    """通过 Anthropic 协议现写一句续火花消息。失败/空返回时抛异常以触发兜底。"""
+    from anthropic import Anthropic
 
-    openai_cfg = config.get("openai", {})
-    api_key = openai_cfg.get("api_key", "")
+    ai_cfg = config.get("anthropic", {})
+    api_key = ai_cfg.get("api_key", "")
     if not api_key:
-        raise ValueError("未配置 OPENAI_API_KEY")
+        raise ValueError("未配置 ANTHROPIC_API_KEY")
 
-    base_url = normalize_openai_base_url(openai_cfg.get("base_url", ""))
-    model = openai_cfg.get("model", "gpt-4o-mini")
+    base_url = normalize_anthropic_base_url(ai_cfg.get("base_url", ""))
+    model = ai_cfg.get("model", "claude-sonnet-4-6")
 
     personas = config.get("aiPersonas") or DEFAULT_PERSONAS
     persona = personas[today.toordinal() % len(personas)]
@@ -145,18 +146,19 @@ def build_ai_message(today: date, config) -> str:
     festival = festival_quote(today)
     system_prompt, user_prompt = build_ai_prompt(persona, festival)
 
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    response = client.chat.completions.create(
+    client = Anthropic(api_key=api_key, base_url=base_url) if base_url else Anthropic(api_key=api_key)
+    response = client.messages.create(
         model=model,
-        # 适度提温，避免每天同一句；写人味短句不需要长输出
+        max_tokens=128,  # 写人味短句不需要长输出
+        # 适度提温，避免每天同一句（Sonnet 4.6 支持 temperature）
         temperature=1.0,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}],
     )
 
-    content = (response.choices[0].message.content or "").strip()
+    content = "".join(
+        block.text for block in response.content if block.type == "text"
+    ).strip()
     if not content:
         raise ValueError("AI 返回空内容")
     return content

@@ -67,10 +67,13 @@ def get_config():
         "aiEnable": os.getenv("MESSAGE_AI_ENABLE", ""),
         # AI persona 池（JSON 数组，可选；为空则用 forms.DEFAULT_PERSONAS）
         "aiPersonas": _parse_json_list(os.getenv("MESSAGE_AI_PERSONAS")),
-        "openai": {
-            "api_key": os.getenv("OPENAI_API_KEY", ""),
-            "base_url": os.getenv("OPENAI_BASE_URL", ""),
-            "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        # AI 供应商：Anthropic 协议（/v1/messages）。base_url 为网关根地址，
+        # SDK 会自动补 /v1/messages；ANTHROPIC_* 缺省时回落到旧的 OPENAI_* 配置，
+        # 便于平滑迁移。
+        "anthropic": {
+            "api_key": os.getenv("ANTHROPIC_API_KEY", os.getenv("OPENAI_API_KEY", "")),
+            "base_url": os.getenv("ANTHROPIC_BASE_URL", os.getenv("OPENAI_BASE_URL", "")),
+            "model": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
         },
         "hitokotoTypes": json.loads(
             os.getenv("HITOKOTO_TYPES", '["文学","影视","诗词","哲学"]')
