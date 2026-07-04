@@ -19,12 +19,13 @@ def build_message_with_openai() -> str:
     config = get_config()
     openai_config = config.get("openai", {})
     api_key = os.getenv("OPENAI_API_KEY", openai_config.get("api_key", ""))
-    model = openai_config.get("model", "MiniMax-M2.7")
+    base_url = os.getenv("OPENAI_BASE_URL", openai_config.get("base_url", ""))
+    model = os.getenv("OPENAI_MODEL", openai_config.get("model", "gpt-5.5"))
 
     if not api_key:
         return get_config().get("messageTemplate", "续火花")
 
-    client = OpenAI(api_key=api_key)
+    client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
 
     response = client.chat.completions.create(
         model=model,
