@@ -61,20 +61,21 @@
 
 | 变量名 | 值 | 说明 |
 | --- | --- | --- |
-| `OPENAI_BASE_URL` | `https://api.cornna.xyz/v1` | OpenAI 兼容接口地址；不带 `/v1` 也行，程序会自动补全 |
-| `OPENAI_MODEL` | `claude-sonnet-4-6` | 使用的模型 |
+| `ANTHROPIC_BASE_URL` | `https://api.cornna.xyz` | Anthropic 协议（`/v1/messages`）网关根地址；带结尾的 `/v1` 也行，程序会自动去掉 |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | 使用的模型 ID，需与网关 `GET /v1/models` 返回的 `id` 完全一致 |
 | `MESSAGE_AI_ENABLE` | `1` | `1` 强制开启 AI；`0` 关闭；留空表示有 key 即自动开启 |
 
 在 `Environment secrets` 中新增：
 
 | 密钥名 | 值 | 说明 |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | `你的 API Key` | 必须放在 Secrets，切勿填到 Variables |
+| `ANTHROPIC_API_KEY` | `你的 API Key` | 必须放在 Secrets，切勿填到 Variables |
 
 说明：
 
-- **`OPENAI_API_KEY` 只能放 Secrets**，不要写进 Variables、代码或任何会提交的文件。
-- 选择模型前请确认它在你的接口上可用。例如 Gemini 系列若上游有「User location is not supported」地区限制会调用失败（自动回落模板），可改用 `claude-sonnet-4-6` 等可用模型。
+- **`ANTHROPIC_API_KEY` 只能放 Secrets**，不要写进 Variables、代码或任何会提交的文件。
+- 旧的 `OPENAI_API_KEY` / `OPENAI_BASE_URL` 仍可用作回落（`ANTHROPIC_*` 缺省时读取），但**模型名没有回落**：只认 `ANTHROPIC_MODEL`，未设置时固定用 `claude-sonnet-4-6`。从旧配置迁移时记得把模型名也改过来。
+- 选择模型前请确认它在你的接口上可用，模型 ID 以网关 `GET /v1/models` 返回的为准（网关上的 ID 可能和厂商官方名称不同）。若上游有「User location is not supported」等地区限制会调用失败（自动回落模板），换一个可用模型即可。
 - 还可选配 `MESSAGE_AI_PERSONAS`（JSON 数组）自定义祝福角度；不配则用内置的 5 个祝福风格逐日轮换。
 
 ## 5. 修改执行时间（可选）
