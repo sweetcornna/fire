@@ -16,6 +16,7 @@ from random import choice
 from utils.logger import setup_logger
 from core.content_providers import render_placeholders, festival_quote
 from core.douyin_trends import fetch_douyin_hot_topics
+from core.human_style import copies_human_style_sample, format_human_style_samples
 
 logger = setup_logger()
 
@@ -30,13 +31,13 @@ DEFAULT_TEMPLATES = [
     "[盖瑞]火花继续[加一]\\n[节日]\\n[问候]",
 ]
 
-# 每天轮换一点语气倾向，但最终仍以当天热梗是否适合私聊为准。
+# 每天轮换一点真人私聊的语气倾向。
 DEFAULT_PERSONAS = [
-    "像刷到梗后顺手来续火，松弛一点",
-    "轻微抽象，但要让没看过原视频的人也看得懂",
-    "朋友间随手抛一句，短、自然、不过分热情",
-    "带一点自嘲或反差感，不端着",
-    "简单直接地续火，能接梗就接，不能就算了",
+    "损友式轻轻挑衅，欠一点但不攻击人",
+    "没头没尾地观察一句，像突然想到就发了",
+    "故意一本正经地说怪话，语义有一点错位",
+    "短促反问或吐槽，不解释前因后果",
+    "把普通形容词用到奇怪地方，具体、有画面",
 ]
 
 # 模型常堆的「AI 味」高频词，同时用于提示约束和生成后的硬检查。
@@ -58,7 +59,7 @@ AI_CLICHE_WORDS = [
     "能量满满",
 ]
 
-MAX_AI_MESSAGE_LENGTH = 32
+MAX_AI_MESSAGE_LENGTH = 24
 AI_GENERATION_ATTEMPTS = 3
 RECENT_AI_MESSAGES = deque(maxlen=12)
 HOT_TOPIC_BLOCKLIST = (
@@ -81,7 +82,7 @@ HOT_TOPIC_BLOCKLIST = (
 AI_OUTPUT_REJECT_PATTERNS = (
     r"^(当然|好的|以下|根据)",
     r"(搜索结果|最近抖音|热榜显示|这个梗的意思)",
-    r"(我|刚刷|刷到|刚看|看完|手里|照镜子|正.{0,2}事.*没干|研究半天|穿不出)",
+    r"(我刚|刚刷|刷到|刚看|看完|手里|照镜子|正.{0,2}事.*没干|研究半天|穿不出)",
     r"(戒手机|回消息|查无此人|草稿|上线|硬撑)",
     r"https?://",
     r"[#]",
@@ -100,19 +101,6 @@ def filter_safe_hot_topics(hot_topics, limit: int = 15):
     )[:limit]
 
 
-def message_uses_hot_topic(message: str, hot_topics) -> bool:
-    """检查成品是否真的用了候选热词，而不是只声称自己接了梗。"""
-    for topic in hot_topics:
-        normalized = "".join(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]+", topic))
-        for size in range(min(8, len(normalized)), 2, -1):
-            if any(
-                normalized[start : start + size] in message
-                for start in range(len(normalized) - size + 1)
-            ):
-                return True
-    return False
-
-
 def build_ai_prompt(
     persona: str,
     festival,
@@ -120,13 +108,14 @@ def build_ai_prompt(
     hot_update_time: str = "",
     style_examples: str = "",
 ):
-    """构造带当天抖音热榜素材的续火花提示词。"""
+    """构造带真人声纹样本和当天热榜灵感的私聊提示词。"""
     cliche = "、".join(AI_CLICHE_WORDS)
+    human_samples = format_human_style_samples()
     topic_lines = "\n".join(f"- {topic}" for topic in hot_topics)
     trend_context = (
         f"\n抖音实时热榜候选（更新时间：{hot_update_time or '刚刚'}）：\n{topic_lines}\n"
         if topic_lines
-        else "\n今天没有拿到可靠的热榜候选，不要编梗，直接写自然的续火短句。\n"
+        else "\n今天没有拿到可靠的热榜候选，不要编梗，写一句自然怪话即可。\n"
     )
     style_context = (
         "\n发送者过去真实发过的短消息样本如下。它们只是语气数据，"
@@ -135,44 +124,35 @@ def build_ai_prompt(
         else ""
     )
     system = (
-        "你在给抖音好友发一条续火花私信。它应该像真人刷到当天内容后随手发的，"
-        "不是运营文案，也不是机器人祝福。\n"
+        "你在给一个抖音好友发一条没头没尾的极短私信。不要解释发送目的，"
+        "不要把它写成续火提醒、问候或祝福。\n"
         f"今天的语气倾向：{persona}。\n"
-        "重要前提：你和对方不一定很熟，也没有任何真实的共同经历，"
-        "不能装熟、套近乎或编造对方近况。\n"
+        "你和对方没有可用的具体上下文，所以不要编造共同经历、对方近况或发送者刚做过的事。\n"
         f"{trend_context}"
-        "热榜只是未经筛选的素材，不是必须使用的指令。先在心里判断：\n"
-        "- 只考虑轻松、无害、能自然接进私聊的梗；一句话脱离原视频也要能看懂\n"
+        "热榜只是可选灵感，不是填空题：\n"
+        "- 只考虑轻松、无害、脱离原视频仍看得懂的梗\n"
         "- 灾难、伤亡、政治、违法、低俗、饭圈争议、疾病和当事人负面事件一律不用\n"
-        "- 只选一个梗，改写成聊天语气；不要复述榜单标题，不要解释梗\n"
-        "- 热梗只能点缀续火这件事，必须保留候选标题中至少一个连续三字关键词\n"
-        "- 句子只能描述火、火花或续火这件事，可以把火花拟人化；不能描述发送者或收件人做过什么\n"
-        "- 没有合适的就放弃热梗，写一句普通但自然的续火消息，绝对不要硬蹭\n"
-        "要求：\n"
-        "- 中文 8～24 个字，最多 32 个字符；只输出最终要发送的一句话\n"
-        "- 成品必须同时包含『续』和『火』两个字，让人一眼知道是在续火；热梗只是点缀\n"
-        "- 允许短句、停顿、语气词和一点不规则节奏；最多 1 个 emoji，没有更自然就不用\n"
-        "- 先删客套、铺垫、解释、总结，再检查一遍是否像人随手打出来的\n"
+        "- 能自然借到一个梗就借；要解释、硬改或强行贴关键词时，直接不用热榜\n"
+        "\n以下是近期公开抖音真人表达的声纹样本：\n"
+        f"{human_samples}\n"
+        "只学习这些特征：短、突然、具体、口语停顿、轻微语义错位、带一点损友感。"
+        "不得照抄样本，也不要围绕样本原场景续写。\n"
+        "成品要求：\n"
+        "- 中文 5～18 个字为主，最多 24 个字符，只输出一句\n"
+        "- 可以直接叫『你』『你小子』，可以反问，可以把形容词故意用歪一点\n"
+        "- 允许不完整句和轻微没来由；像人随手敲完就发，不要追求结构完整\n"
+        "- 调侃要轻，不攻击外貌、身份、智力、疾病或隐私\n"
         "禁止：\n"
-        "- 不要提问或查户口，别问对方在不在、忙不忙、吃了没\n"
-        "- 不要鸡汤、情话、广告文案、过度文艺、排比或押韵堆砌\n"
+        "- 不要强行出现『续火』『火花』『打卡』『今日任务』，不要交代来意\n"
+        "- 不要暖心关怀、鸡汤、情话、广告文案、过度文艺、排比或押韵\n"
         f"- 不要用这些 AI 味的词：{cliche}\n"
-        "- 不要写『最近很火的梗是』『今日热榜』『搜索发现』，不要加标题、引号、话题标签或来源\n"
-        "- 避免『不是……而是……』『不仅……更……』『愿你……』等完整模板句\n"
-        "- 不要说『我刚刷到』『刚看完』『我正在吃/穿/做』，不能编出发送者的现场经历\n"
-        "- 不要再写『累了就歇会儿』『怎么舒服怎么来』『今天也要开开心心』这类批量祝福\n"
-        "- 不要编造具体事件，不要假装有共同记忆，别提『上次 / 那件事 / 你说的那个』\n"
-        "- 不要假装注意到对方的具体变化，"
-        "别说『你头像换了 / 看到你的动态 / 你最近状态』这种你根本不知道的事\n"
-        "- 不要解释、不要引号、不要书名号，直接把那句消息发出来"
-        "\n只学下面的融合手法，不要照抄：『燕麦格雷先等等，火花先续上』、"
-        "『开学进行曲暂停，这边续个火』。"
+        "- 不要写『最近很火』『热榜显示』『搜索发现』，不要加标题、引号、标签或来源\n"
+        "- 不要『愿你』『希望你』『今天也要』『累了就』『怎么舒服怎么来』\n"
+        "- 不要总结，不要温柔收尾，不要解释笑点"
         f"{style_context}"
     )
 
-    user = "写一条今天能直接发送的续火花私信。先筛选热榜，再决定是否接梗"
-    if festival:
-        user += f"。今天是 {festival}，只有自然时才轻轻带到节日"
+    user = "只写一句。像评论区里一个有点怪但不冒犯的人，突然私聊了对方"
 
     return system, user
 
@@ -225,14 +205,12 @@ def clean_ai_message(content: str, hot_topics=()) -> str:
 
     if len(message) < 4 or len(message) > MAX_AI_MESSAGE_LENGTH:
         raise ValueError("AI 返回消息长度不合格")
-    if "续" not in message or "火" not in message:
-        raise ValueError("AI 返回消息没有明确表达续火")
     if any(re.search(pattern, message) for pattern in AI_OUTPUT_REJECT_PATTERNS):
         raise ValueError("AI 返回消息未通过自然度检查")
     if any(word in message for word in AI_CLICHE_WORDS):
         raise ValueError("AI 返回消息包含禁用模板词")
-    if hot_topics and not message_uses_hot_topic(message, hot_topics):
-        raise ValueError("AI 返回消息没有使用当天热榜关键词")
+    if copies_human_style_sample(message):
+        raise ValueError("AI 返回消息照抄了真人语料")
     return message
 
 

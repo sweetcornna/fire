@@ -87,11 +87,12 @@ class BuildAiPromptTest(unittest.TestCase):
         )
         self.assertIn("开学版井柏然进行曲", system)
         self.assertIn("2026-09-04 16:50:39", system)
-        self.assertIn("先在心里判断", system)
+        self.assertIn("热榜只是可选灵感", system)
 
-    def test_message_does_not_interrogate(self):
+    def test_prompt_allows_short_direct_teasing(self):
         system, _user = forms.build_ai_prompt("随手接梗", None)
-        self.assertTrue("提问" in system or "查户口" in system)
+        self.assertIn("你小子", system)
+        self.assertIn("可以反问", system)
 
     def test_system_prompt_forbids_cliche_and_copywriting(self):
         # 仍然禁止鸡汤 / 情话 / 广告文案 / AI 味套话
@@ -107,34 +108,30 @@ class BuildAiPromptTest(unittest.TestCase):
 
     def test_festival_injected_only_when_present(self):
         _s1, user_plain = forms.build_ai_prompt("随手接梗", None)
-        self.assertNotIn("节日", user_plain)
-
         _s2, user_festival = forms.build_ai_prompt("随手接梗", "新年快乐")
-        self.assertIn("新年快乐", user_festival)
+        self.assertEqual(user_plain, user_festival)
 
     def test_default_personas_are_casual_chat_styles(self):
         self.assertTrue(len(forms.DEFAULT_PERSONAS) >= 3)
         for persona in forms.DEFAULT_PERSONAS:
             self.assertGreaterEqual(len(persona), 4, persona)
         joined = "".join(forms.DEFAULT_PERSONAS)
-        self.assertIn("随手", joined)
-        self.assertIn("梗", joined)
+        self.assertIn("损友", joined)
+        self.assertIn("语义", joined)
 
     def test_prompt_pushes_variety(self):
         system, _user = forms.build_ai_prompt("随手接梗", None)
-        self.assertIn("累了就歇会儿", system)
+        self.assertIn("累了就", system)
         self.assertIn("怎么舒服怎么来", system)
 
     def test_prompt_forbids_fabricated_context(self):
         system, _user = forms.build_ai_prompt("随手接梗", None)
         self.assertIn("编造", system)
-        self.assertIn("上次", system)
+        self.assertIn("共同经历", system)
 
     def test_prompt_forbids_pretend_observation(self):
-        # 不能假装注意到对方的具体变化
         system, _user = forms.build_ai_prompt("随手接梗", None)
-        self.assertIn("头像", system)
-        self.assertIn("动态", system)
+        self.assertIn("发送者刚做过的事", system)
 
     def test_style_examples_are_data_not_instructions(self):
         system, _user = forms.build_ai_prompt(
@@ -149,10 +146,11 @@ class BuildAiPromptTest(unittest.TestCase):
         )
         self.assertEqual(topics, ("轻松穿搭挑战", "开学进行曲"))
 
-    def test_message_must_use_a_real_topic_fragment(self):
-        topics = ("当我有一件燕麦格雷外套", "开学版井柏然进行曲")
-        self.assertTrue(forms.message_uses_hot_topic("燕麦格雷先等等，火花先续上", topics))
-        self.assertFalse(forms.message_uses_hot_topic("路过一下，火花先续上", topics))
+    def test_prompt_contains_public_human_style_samples(self):
+        system, _user = forms.build_ai_prompt("随手接梗", None)
+        self.assertIn("你的胆子真是肥嘟嘟的", system)
+        self.assertIn("你敢买我都不敢用", system)
+        self.assertIn("不得照抄", system)
 
 
 class BuildAiMessageTest(unittest.TestCase):
@@ -177,12 +175,12 @@ class BuildAiMessageTest(unittest.TestCase):
         ):
             client = Anthropic.return_value
             client.messages.create.return_value = SimpleNamespace(
-                content=[SimpleNamespace(type="text", text="开学进行曲先停停，这边续个火")]
+                content=[SimpleNamespace(type="text", text="你今天这气焰怪蓬松的")]
             )
 
             out = forms.build_ai_message(NORMAL_DAY, cfg)
 
-        self.assertEqual(out, "开学进行曲先停停，这边续个火")
+        self.assertEqual(out, "你今天这气焰怪蓬松的")
         Anthropic.assert_called_once_with(
             api_key="fake-test-key", base_url="https://api.cornna.xyz"
         )
@@ -198,13 +196,9 @@ class BuildAiMessageTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             forms.clean_ai_message("刚刷到减脂教程，手里薯片突然不香了")
         with self.assertRaises(ValueError):
-            forms.clean_ai_message("燕麦格雷先放放，正事别耽误")
-        with self.assertRaises(ValueError):
             forms.clean_ai_message("正事一件没干，续火花倒是挺积极")
         with self.assertRaises(ValueError):
-            forms.clean_ai_message(
-                "路过一下，火花先续上", hot_topics=("燕麦格雷", "开学进行曲")
-            )
+            forms.clean_ai_message("你的胆子真是肥嘟嘟的")
 
     def test_retries_rejected_and_duplicate_messages(self):
         cfg = {
@@ -220,7 +214,7 @@ class BuildAiMessageTest(unittest.TestCase):
                 content=[SimpleNamespace(type="text", text="正事没干，续火最积极")]
             ),
             SimpleNamespace(
-                content=[SimpleNamespace(type="text", text="燕麦格雷先等等，火先续上")]
+                content=[SimpleNamespace(type="text", text="你小子的气焰有点蓬松")]
             ),
         ]
 
@@ -230,7 +224,7 @@ class BuildAiMessageTest(unittest.TestCase):
             Anthropic.return_value.messages.create.side_effect = responses
             out = forms.build_ai_message(NORMAL_DAY, cfg)
 
-        self.assertEqual(out, "燕麦格雷先等等，火先续上")
+        self.assertEqual(out, "你小子的气焰有点蓬松")
         self.assertEqual(Anthropic.return_value.messages.create.call_count, 2)
 
 
