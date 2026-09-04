@@ -5,6 +5,32 @@ if os.path.exists(".env"):
 
     load_dotenv(".env")
 
-from core.tasks import runTasks
+def main():
+    from utils.config import get_config
 
-runTasks()
+    config = get_config()
+    if config.get("previewOnly", False):
+        from datetime import date
+
+        from core.forms import build_ai_message
+
+        count = config.get("previewCount", 5)
+        successful = 0
+        print(f"AI 消息预览（共 {count} 条，均未发送）：")
+        for index in range(1, count + 1):
+            try:
+                print(f"{index}. {build_ai_message(date.today(), config)}")
+                successful += 1
+            except Exception as exc:
+                print(f"{index}. [生成失败] {exc}")
+        if successful == 0:
+            raise SystemExit("全部 AI 预览均生成失败")
+        return
+
+    from core.tasks import runTasks
+
+    runTasks()
+
+
+if __name__ == "__main__":
+    main()

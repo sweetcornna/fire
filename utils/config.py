@@ -16,6 +16,20 @@ config = None
 userData = None
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
 class Environment(Enum):
     GITHUBACTION = "GITHUB_ACTION"  # GitHub Action 运行
     LOCAL = "LOCAL"  # 本地代码运行
@@ -67,13 +81,17 @@ def get_config():
         "aiEnable": os.getenv("MESSAGE_AI_ENABLE", ""),
         # AI persona 池（JSON 数组，可选；为空则用 forms.DEFAULT_PERSONAS）
         "aiPersonas": _parse_json_list(os.getenv("MESSAGE_AI_PERSONAS")),
+        # 可选：发送者过往真实短消息样本，用于模仿语气而不是照抄内容。
+        "messageStyleExamples": os.getenv("MESSAGE_STYLE_EXAMPLES", ""),
+        "previewOnly": _env_bool("PREVIEW_ONLY"),
+        "previewCount": max(1, min(10, _env_int("AI_PREVIEW_COUNT", 5))),
         # AI 供应商：Anthropic 协议（/v1/messages）。base_url 为网关根地址，
         # SDK 会自动补 /v1/messages；ANTHROPIC_* 缺省时回落到旧的 OPENAI_* 配置，
         # 便于平滑迁移。
         "anthropic": {
             "api_key": os.getenv("ANTHROPIC_API_KEY", os.getenv("OPENAI_API_KEY", "")),
             "base_url": os.getenv("ANTHROPIC_BASE_URL", os.getenv("OPENAI_BASE_URL", "")),
-            "model": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+            "model": os.getenv("ANTHROPIC_MODEL", "gemini-3.8-flash-high"),
         },
         "hitokotoTypes": json.loads(
             os.getenv("HITOKOTO_TYPES", '["文学","影视","诗词","哲学"]')

@@ -3,6 +3,17 @@
 name: 【dev（测试）分支】DouYin Spark Flow Schedule Run
 on:
   workflow_dispatch: # 由外部服务器 cron 触发（北京 09:00）；移除 GitHub 原生 schedule 以避免双重触发导致重复发消息
+    inputs:
+      preview_only:
+        description: "只让项目生成预览，不登录抖音、不发送"
+        required: false
+        default: false
+        type: boolean
+      preview_count:
+        description: "预览生成条数（1-10）"
+        required: false
+        default: "5"
+        type: string
 jobs:
   run-main:
     timeout-minutes: 20
@@ -17,6 +28,7 @@ jobs:
       with:
         python-version: '3.11'
     - name: Test Douyin Accessibility
+      if: ${{ inputs.preview_only != true }}
       run: |
         curl -I https://creator.douyin.com/
     - name: Install dependencies
@@ -24,6 +36,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     - name: Ensure browsers are installed
+      if: ${{ inputs.preview_only != true }}
       run: playwright install chromium --with-deps --only-shell
     - name: Export Github Environment Variables
       env:
@@ -33,6 +46,8 @@ jobs:
       env:
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         COOKIES_33217367887: ${{ secrets.COOKIES_33217367887 }}
+        PREVIEW_ONLY: ${{ inputs.preview_only || 'false' }}
+        AI_PREVIEW_COUNT: ${{ inputs.preview_count || '5' }}
       run: python main.py
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}

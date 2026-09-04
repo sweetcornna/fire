@@ -55,15 +55,16 @@
 
 ## 4.1 启用 AI 生成消息（可选，推荐）
 
-默认情况下消息走「模板 + 一言」生成。如果希望每天由 AI 现写一句**暖心祝福语**（更自然、不重复、不查户口），在 `user-data` 环境中追加下列配置即可。未配置时会自动回落模板，不影响运行。
+默认情况下消息走「模板 + 一言」生成。如果希望每天读取抖音实时热榜，再由 AI 现写一句自然、不过度蹭梗的短消息，请在 `user-data` 环境中追加下列配置。未配置时会自动回落模板，不影响运行。
 
 在 `Settings` -> `Environments` -> `user-data` -> `Environment variables` 中新增：
 
 | 变量名 | 值 | 说明 |
 | --- | --- | --- |
 | `ANTHROPIC_BASE_URL` | `https://api.cornna.xyz` | Anthropic 协议（`/v1/messages`）网关根地址；带结尾的 `/v1` 也行，程序会自动去掉 |
-| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | 使用的模型 ID，需与网关 `GET /v1/models` 返回的 `id` 完全一致 |
+| `ANTHROPIC_MODEL` | `gemini-3.8-flash-high` | 使用的模型 ID，需与网关 `GET /v1/models` 返回的 `id` 完全一致 |
 | `MESSAGE_AI_ENABLE` | `1` | `1` 强制开启 AI；`0` 关闭；留空表示有 key 即自动开启 |
+| `MESSAGE_STYLE_EXAMPLES` | 可留空 | 可选；每行一条你过去真实发过的短消息，模型只模仿语气和节奏，不照抄内容 |
 
 在 `Environment secrets` 中新增：
 
@@ -74,9 +75,10 @@
 说明：
 
 - **`ANTHROPIC_API_KEY` 只能放 Secrets**，不要写进 Variables、代码或任何会提交的文件。
-- 旧的 `OPENAI_API_KEY` / `OPENAI_BASE_URL` 仍可用作回落（`ANTHROPIC_*` 缺省时读取），但**模型名没有回落**：只认 `ANTHROPIC_MODEL`，未设置时固定用 `claude-sonnet-4-6`。从旧配置迁移时记得把模型名也改过来。
+- 旧的 `OPENAI_API_KEY` / `OPENAI_BASE_URL` 仍可用作回落（`ANTHROPIC_*` 缺省时读取），但**模型名没有回落**：只认 `ANTHROPIC_MODEL`，未设置时固定用 `gemini-3.8-flash-high`。从旧配置迁移时记得把模型名也改过来。
 - 选择模型前请确认它在你的接口上可用，模型 ID 以网关 `GET /v1/models` 返回的为准（网关上的 ID 可能和厂商官方名称不同）。若上游有「User location is not supported」等地区限制会调用失败（自动回落模板），换一个可用模型即可。
-- 还可选配 `MESSAGE_AI_PERSONAS`（JSON 数组）自定义祝福角度；不配则用内置的 5 个祝福风格逐日轮换。
+- 还可选配 `MESSAGE_AI_PERSONAS`（JSON 数组）自定义聊天语气；不配则用内置的 5 种自然语气逐日轮换。
+- 可在 Actions 中手动运行 dev 工作流，并将 `preview_only` 设为 `true`。程序会生成 1—10 条真实 AI 文案写入日志，但不会登录抖音或发送；外部每日定时触发默认仍会真实发送。
 
 ## 5. 修改执行时间（可选）
 
