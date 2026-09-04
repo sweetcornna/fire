@@ -91,8 +91,8 @@ class BuildAiPromptTest(unittest.TestCase):
 
     def test_prompt_requires_varied_short_forms(self):
         system, _user = forms.build_ai_prompt("随手接梗", None)
-        self.assertIn("不是每句都叫", system)
-        self.assertIn("不是每句都反问", system)
+        self.assertIn("选择今天指定的一种串法", system)
+        self.assertIn("逻辑要明显不对", system)
 
     def test_system_prompt_forbids_cliche_and_copywriting(self):
         # 仍然禁止鸡汤 / 情话 / 广告文案 / AI 味套话
@@ -116,8 +116,8 @@ class BuildAiPromptTest(unittest.TestCase):
         for persona in forms.DEFAULT_PERSONAS:
             self.assertGreaterEqual(len(persona), 4, persona)
         joined = "".join(forms.DEFAULT_PERSONAS)
-        self.assertIn("损友", joined)
-        self.assertIn("碎句", joined)
+        self.assertIn("系统", joined)
+        self.assertIn("故意", joined)
 
     def test_personas_rotate_between_calls(self):
         forms.RECENT_AI_PERSONAS.clear()
@@ -156,7 +156,8 @@ class BuildAiPromptTest(unittest.TestCase):
     def test_prompt_contains_public_human_style_samples(self):
         system, _user = forms.build_ai_prompt("随手接梗", None)
         self.assertIn("你的胆子真是肥嘟嘟的", system)
-        self.assertIn("你敢买我都不敢用", system)
+        self.assertIn("不是说钱能养人吗", system)
+        self.assertIn("检测到你的直播风格为路边", system)
         self.assertIn("不得照抄", system)
 
 
@@ -183,12 +184,12 @@ class BuildAiMessageTest(unittest.TestCase):
         ):
             client = Anthropic.return_value
             client.messages.create.return_value = SimpleNamespace(
-                content=[SimpleNamespace(type="text", text="你今天这气焰怪蓬松的")]
+                content=[SimpleNamespace(type="text", text="检测到你过于正常，建议重启")]
             )
 
             out = forms.build_ai_message(NORMAL_DAY, cfg)
 
-        self.assertEqual(out, "你今天这气焰怪蓬松的")
+        self.assertEqual(out, "检测到你过于正常，建议重启")
         Anthropic.assert_called_once_with(
             api_key="fake-test-key", base_url="https://api.cornna.xyz"
         )
@@ -228,7 +229,7 @@ class BuildAiMessageTest(unittest.TestCase):
                 content=[SimpleNamespace(type="text", text="正事没干，续火最积极")]
             ),
             SimpleNamespace(
-                content=[SimpleNamespace(type="text", text="你小子的气焰有点蓬松")]
+                content=[SimpleNamespace(type="text", text="不是说沉默是金吗，你怎么还没发财")]
             ),
         ]
 
@@ -238,7 +239,7 @@ class BuildAiMessageTest(unittest.TestCase):
             Anthropic.return_value.messages.create.side_effect = responses
             out = forms.build_ai_message(NORMAL_DAY, cfg)
 
-        self.assertEqual(out, "你小子的气焰有点蓬松")
+        self.assertEqual(out, "不是说沉默是金吗，你怎么还没发财")
         self.assertEqual(Anthropic.return_value.messages.create.call_count, 2)
 
 
