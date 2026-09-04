@@ -61,16 +61,56 @@ AI_CLICHE_WORDS = [
 MAX_AI_MESSAGE_LENGTH = 32
 AI_GENERATION_ATTEMPTS = 3
 RECENT_AI_MESSAGES = deque(maxlen=12)
+HOT_TOPIC_BLOCKLIST = (
+    "去世",
+    "死亡",
+    "台风",
+    "暴雨",
+    "降水",
+    "逮捕",
+    "战争",
+    "地震",
+    "事故",
+    "通报",
+    "市长",
+    "主席",
+    "外交",
+    "长征",
+    "12345",
+)
 AI_OUTPUT_REJECT_PATTERNS = (
     r"^(当然|好的|以下|根据)",
     r"(搜索结果|最近抖音|热榜显示|这个梗的意思)",
-    r"(我|刚刷|刷到|刚看|看完|手里|照镜子|正事.*没干|研究半天|穿不出)",
+    r"(我|刚刷|刷到|刚看|看完|手里|照镜子|正.{0,2}事.*没干|研究半天|穿不出)",
+    r"(戒手机|回消息|查无此人|草稿|上线|硬撑)",
     r"https?://",
     r"[#]",
     r"[!！?？]{2,}",
 )
 
 DEFAULT_SELECTION_MODE = "daily-rotate"
+
+
+def filter_safe_hot_topics(hot_topics, limit: int = 15):
+    """先用确定性词表排除明显不适合玩梗的严肃热点。"""
+    return tuple(
+        topic
+        for topic in hot_topics
+        if not any(blocked in topic for blocked in HOT_TOPIC_BLOCKLIST)
+    )[:limit]
+
+
+def message_uses_hot_topic(message: str, hot_topics) -> bool:
+    """检查成品是否真的用了候选热词，而不是只声称自己接了梗。"""
+    for topic in hot_topics:
+        normalized = "".join(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]+", topic))
+        for size in range(min(8, len(normalized)), 2, -1):
+            if any(
+                normalized[start : start + size] in message
+                for start in range(len(normalized) - size + 1)
+            ):
+                return True
+    return False
 
 
 def build_ai_prompt(
@@ -105,7 +145,8 @@ def build_ai_prompt(
         "- 只考虑轻松、无害、能自然接进私聊的梗；一句话脱离原视频也要能看懂\n"
         "- 灾难、伤亡、政治、违法、低俗、饭圈争议、疾病和当事人负面事件一律不用\n"
         "- 只选一个梗，改写成聊天语气；不要复述榜单标题，不要解释梗\n"
-        "- 热梗只能点缀续火这件事，不能描述发送者已经刷、看、研究、吃、穿、买或做了什么\n"
+        "- 热梗只能点缀续火这件事，必须保留候选标题中至少一个连续三字关键词\n"
+        "- 句子只能描述火、火花或续火这件事，可以把火花拟人化；不能描述发送者或收件人做过什么\n"
         "- 没有合适的就放弃热梗，写一句普通但自然的续火消息，绝对不要硬蹭\n"
         "要求：\n"
         "- 中文 8～24 个字，最多 32 个字符；只输出最终要发送的一句话\n"
@@ -124,6 +165,8 @@ def build_ai_prompt(
         "- 不要假装注意到对方的具体变化，"
         "别说『你头像换了 / 看到你的动态 / 你最近状态』这种你根本不知道的事\n"
         "- 不要解释、不要引号、不要书名号，直接把那句消息发出来"
+        "\n只学下面的融合手法，不要照抄：『燕麦格雷先等等，火花先续上』、"
+        "『开学进行曲暂停，这边续个火』。"
         f"{style_context}"
     )
 
@@ -173,7 +216,7 @@ def normalize_anthropic_base_url(base_url: str):
     return base_url
 
 
-def clean_ai_message(content: str) -> str:
+def clean_ai_message(content: str, hot_topics=()) -> str:
     """清理并拦截带解释、模板腔或异常长度的模型输出。"""
     message = next((line.strip() for line in content.splitlines() if line.strip()), "")
     message = re.sub(r"^(?:消息|文案|成品|最终(?:消息|文案)?)[：:]\s*", "", message)
@@ -188,6 +231,8 @@ def clean_ai_message(content: str) -> str:
         raise ValueError("AI 返回消息未通过自然度检查")
     if any(word in message for word in AI_CLICHE_WORDS):
         raise ValueError("AI 返回消息包含禁用模板词")
+    if hot_topics and not message_uses_hot_topic(message, hot_topics):
+        raise ValueError("AI 返回消息没有使用当天热榜关键词")
     return message
 
 
@@ -208,6 +253,7 @@ def build_ai_message(today: date, config) -> str:
 
     festival = festival_quote(today)
     hot_update_time, hot_topics = fetch_douyin_hot_topics()
+    hot_topics = filter_safe_hot_topics(hot_topics)
     system_prompt, user_prompt = build_ai_prompt(
         persona,
         festival,
@@ -237,7 +283,7 @@ def build_ai_message(today: date, config) -> str:
             block.text for block in response.content if block.type == "text"
         ).strip()
         try:
-            message = clean_ai_message(content)
+            message = clean_ai_message(content, hot_topics=hot_topics)
             if message in RECENT_AI_MESSAGES:
                 raise ValueError("AI 返回了重复消息")
             RECENT_AI_MESSAGES.append(message)
