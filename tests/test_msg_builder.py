@@ -89,10 +89,10 @@ class BuildAiPromptTest(unittest.TestCase):
         self.assertIn("2026-09-04 16:50:39", system)
         self.assertIn("热榜只是可选灵感", system)
 
-    def test_prompt_allows_short_direct_teasing(self):
+    def test_prompt_requires_varied_short_forms(self):
         system, _user = forms.build_ai_prompt("随手接梗", None)
-        self.assertIn("你小子", system)
-        self.assertIn("可以反问", system)
+        self.assertIn("不是每句都叫", system)
+        self.assertIn("不是每句都反问", system)
 
     def test_system_prompt_forbids_cliche_and_copywriting(self):
         # 仍然禁止鸡汤 / 情话 / 广告文案 / AI 味套话
@@ -117,7 +117,14 @@ class BuildAiPromptTest(unittest.TestCase):
             self.assertGreaterEqual(len(persona), 4, persona)
         joined = "".join(forms.DEFAULT_PERSONAS)
         self.assertIn("损友", joined)
-        self.assertIn("语义", joined)
+        self.assertIn("碎句", joined)
+
+    def test_personas_rotate_between_calls(self):
+        forms.RECENT_AI_PERSONAS.clear()
+        personas = ["短句", "怪话", "反问"]
+        first = forms.pick_ai_persona(personas)
+        second = forms.pick_ai_persona(personas)
+        self.assertNotEqual(first, second)
 
     def test_prompt_pushes_variety(self):
         system, _user = forms.build_ai_prompt("随手接梗", None)
@@ -156,6 +163,7 @@ class BuildAiPromptTest(unittest.TestCase):
 class BuildAiMessageTest(unittest.TestCase):
     def setUp(self):
         forms.RECENT_AI_MESSAGES.clear()
+        forms.RECENT_AI_PERSONAS.clear()
 
     def test_gateway_uses_requested_gemini_model_and_hot_topics(self):
         cfg = {
@@ -203,6 +211,8 @@ class BuildAiMessageTest(unittest.TestCase):
             forms.clean_ai_message("你这脑回路装了几个减速带")
         with self.assertRaises(ValueError):
             forms.clean_ai_message("你站那儿一动不动等谁投币呢")
+        with self.assertRaises(ValueError):
+            forms.clean_ai_message("你这胆子怎么还是流心的")
 
     def test_retries_rejected_and_duplicate_messages(self):
         cfg = {

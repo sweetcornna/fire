@@ -33,11 +33,12 @@ DEFAULT_TEMPLATES = [
 
 # 每天轮换一点真人私聊的语气倾向。
 DEFAULT_PERSONAS = [
-    "损友式轻轻挑衅，欠一点但不攻击人",
-    "没头没尾地观察一句，像突然想到就发了",
-    "故意一本正经地说怪话，语义有一点错位",
-    "短促反问或吐槽，不解释前因后果",
-    "把普通形容词用到奇怪地方，具体、有画面",
+    "一句很短的损友式轻轻挑衅，不攻击人",
+    "没头没尾地观察一句，不要提问",
+    "故意一本正经地胡说，像在下结论",
+    "一句突然的怪反问，不补解释",
+    "三到十个字的碎句，允许没有主谓宾",
+    "借一个当天轻松热词，但不复述标题",
 ]
 
 # 模型常堆的「AI 味」高频词，同时用于提示约束和生成后的硬检查。
@@ -62,6 +63,7 @@ AI_CLICHE_WORDS = [
 MAX_AI_MESSAGE_LENGTH = 24
 AI_GENERATION_ATTEMPTS = 3
 RECENT_AI_MESSAGES = deque(maxlen=12)
+RECENT_AI_PERSONAS = deque(maxlen=2)
 HOT_TOPIC_BLOCKLIST = (
     "去世",
     "死亡",
@@ -93,6 +95,10 @@ HARSH_BANTER_WORDS = (
     "蠢",
     "丑",
     "穷",
+    "嚣张",
+    "威风",
+    "凶劲",
+    "唬谁",
 )
 AI_OUTPUT_REJECT_PATTERNS = (
     r"^(当然|好的|以下|根据)",
@@ -100,6 +106,7 @@ AI_OUTPUT_REJECT_PATTERNS = (
     r"(我刚|刚刷|刷到|刚看|看完|手里|照镜子|正.{0,2}事.*没干|研究半天|穿不出)",
     r"(戒手机|回消息|查无此人|草稿|上线|硬撑)",
     r"(平时出门|平时发呆|站那|走这么|今天看着)",
+    r"^你.{0,8}怎么",
     r"https?://",
     r"[#]",
     r"[!！?？]{2,}",
@@ -115,6 +122,14 @@ def filter_safe_hot_topics(hot_topics, limit: int = 15):
         for topic in hot_topics
         if not any(blocked in topic for blocked in HOT_TOPIC_BLOCKLIST)
     )[:limit]
+
+
+def pick_ai_persona(personas):
+    """在不同调用间轮换语气，避免一次任务连续套用同一种句法。"""
+    available = [persona for persona in personas if persona not in RECENT_AI_PERSONAS]
+    persona = choice(available or personas)
+    RECENT_AI_PERSONAS.append(persona)
+    return persona
 
 
 def build_ai_prompt(
@@ -154,8 +169,8 @@ def build_ai_prompt(
         "只学习这些特征：短、突然、具体、口语停顿、轻微语义错位、带一点损友感。"
         "不得照抄样本，也不要围绕样本原场景续写。\n"
         "成品要求：\n"
-        "- 中文 5～18 个字为主，最多 24 个字符，只输出一句\n"
-        "- 可以直接叫『你』『你小子』，可以反问，可以把形容词故意用歪一点\n"
+        "- 中文 3～15 个字为主，最多 24 个字符，只输出一句\n"
+        "- 按今天的语气倾向选择句式；不是每句都叫『你』，也不是每句都反问\n"
         "- 允许不完整句和轻微没来由；像人随手敲完就发，不要追求结构完整\n"
         "- 三分损、七分可爱：优先把胆子、气焰、运气、反应等中性词，和蓬松、"
         "脆、圆、迷你、有嚼劲之类触感或食物形容词错配\n"
@@ -167,6 +182,7 @@ def build_ai_prompt(
         "- 不要写『最近很火』『热榜显示』『搜索发现』，不要加标题、引号、标签或来源\n"
         "- 不要『愿你』『希望你』『今天也要』『累了就』『怎么舒服怎么来』\n"
         "- 不要用怨气、目中无人、脑回路、心虚、受气包等负面标签\n"
+        "- 禁止套用『你这 X 怎么 Y』『你的 X 怎么 Y』这种批量造梗句式\n"
         "- 没有聊天上下文，不要假装看见对方正在走路、发呆、站着或做其他动作\n"
         "- 不要总结，不要温柔收尾，不要解释笑点"
         f"{style_context}"
@@ -249,7 +265,7 @@ def build_ai_message(today: date, config) -> str:
     model = ai_cfg.get("model", "gemini-3.8-flash-high")
 
     personas = config.get("aiPersonas") or DEFAULT_PERSONAS
-    persona = personas[today.toordinal() % len(personas)]
+    persona = pick_ai_persona(personas)
 
     festival = festival_quote(today)
     hot_update_time, hot_topics = fetch_douyin_hot_topics()
