@@ -12,14 +12,16 @@ def main():
     if config.get("previewOnly", False):
         from datetime import date
 
-        from core.forms import build_ai_message
+        from core.forms import build_ai_message, wrap_ai_message
 
         count = config.get("previewCount", 5)
         successful = 0
         print(f"AI 消息预览（共 {count} 条，均未发送）：")
         for index in range(1, count + 1):
             try:
-                print(f"{index}. {build_ai_message(date.today(), config)}")
+                content = build_ai_message(date.today(), config)
+                preview = wrap_ai_message(content, config).replace("\\n", "\n   ")
+                print(f"{index}. {preview}")
                 successful += 1
             except Exception as exc:
                 print(f"{index}. [生成失败] {exc}")

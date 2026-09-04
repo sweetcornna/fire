@@ -65,6 +65,7 @@
 | `ANTHROPIC_MODEL` | `gemini-3.8-flash-high` | 使用的模型 ID，需与网关 `GET /v1/models` 返回的 `id` 完全一致 |
 | `MESSAGE_AI_ENABLE` | `1` | `1` 强制开启 AI；`0` 关闭；留空表示有 key 即自动开启 |
 | `MESSAGE_STYLE_EXAMPLES` | 可留空 | 可选；每行一条你过去真实发过的短消息，模型只模仿语气和节奏，不照抄内容 |
+| `AI_MESSAGE_TEMPLATE` | `今日续火花啦\\n今日一串：{content}` | 最终发送模板；`{content}` 会替换为 AI 正文，`\\n` 表示换行 |
 
 在 `Environment secrets` 中新增：
 

@@ -124,6 +124,7 @@ AI_OUTPUT_REJECT_PATTERNS = (
 )
 
 DEFAULT_SELECTION_MODE = "daily-rotate"
+DEFAULT_AI_MESSAGE_TEMPLATE = "今日续火花啦\\n今日一串：{content}"
 
 
 def filter_safe_hot_topics(hot_topics, limit: int = 15):
@@ -262,6 +263,14 @@ def clean_ai_message(content: str, hot_topics=()) -> str:
     return message
 
 
+def wrap_ai_message(content: str, config) -> str:
+    """把模型正文放进稳定的发送模板；``\\n`` 由发送层转成换行。"""
+    template = config.get("aiMessageTemplate") or DEFAULT_AI_MESSAGE_TEMPLATE
+    if "{content}" not in template:
+        template = f"{template}\\n{{content}}"
+    return template.replace("{content}", content).strip()
+
+
 def build_ai_message(today: date, config) -> str:
     """通过 Anthropic 协议现写一句续火花消息。失败/空返回时抛异常以触发兜底。"""
     from anthropic import Anthropic
@@ -327,7 +336,7 @@ def select_and_build(today: date, config) -> str:
             message = build_ai_message(today, config)
             if message:
                 logger.debug(f"AI 生成今日消息: {message}")
-                return message
+                return wrap_ai_message(message, config)
         except Exception as exc:  # 无 key / 网络 / 空返回 -> 兜底模板
             logger.warning(f"AI 生成消息失败，回落模板路径：{exc}")
 

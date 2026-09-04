@@ -83,6 +83,9 @@ def get_config():
         "aiPersonas": _parse_json_list(os.getenv("MESSAGE_AI_PERSONAS")),
         # 可选：发送者过往真实短消息样本，用于模仿语气而不是照抄内容。
         "messageStyleExamples": os.getenv("MESSAGE_STYLE_EXAMPLES", ""),
+        "aiMessageTemplate": os.getenv(
+            "AI_MESSAGE_TEMPLATE", "今日续火花啦\\n今日一串：{content}"
+        ),
         "previewOnly": _env_bool("PREVIEW_ONLY"),
         "previewCount": max(1, min(10, _env_int("AI_PREVIEW_COUNT", 5))),
         # AI 供应商：Anthropic 协议（/v1/messages）。base_url 为网关根地址，
