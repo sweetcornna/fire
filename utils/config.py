@@ -84,7 +84,8 @@ def get_config():
         # 可选：发送者过往真实短消息样本，用于模仿语气而不是照抄内容。
         "messageStyleExamples": os.getenv("MESSAGE_STYLE_EXAMPLES", ""),
         "aiMessageTemplate": os.getenv(
-            "AI_MESSAGE_TEMPLATE", "今日续火花啦\\n今日一串：{content}"
+            "AI_MESSAGE_TEMPLATE",
+            "[盖瑞]今日续火花啦[加一]\\n[右边]今日一串：{content}[左边]",
         ),
         "previewOnly": _env_bool("PREVIEW_ONLY"),
         "previewCount": max(1, min(10, _env_int("AI_PREVIEW_COUNT", 5))),

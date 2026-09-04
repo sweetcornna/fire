@@ -124,7 +124,9 @@ AI_OUTPUT_REJECT_PATTERNS = (
 )
 
 DEFAULT_SELECTION_MODE = "daily-rotate"
-DEFAULT_AI_MESSAGE_TEMPLATE = "今日续火花啦\\n今日一串：{content}"
+DEFAULT_AI_MESSAGE_TEMPLATE = (
+    "[盖瑞]今日续火花啦[加一]\\n[右边]今日一串：{content}[左边]"
+)
 
 
 def filter_safe_hot_topics(hot_topics, limit: int = 15):

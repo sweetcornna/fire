@@ -244,7 +244,11 @@ class BuildAiMessageTest(unittest.TestCase):
 
     def test_wraps_body_in_daily_troll_template(self):
         out = forms.wrap_ai_message("不是说钱能养人吗", {})
-        self.assertEqual(out, "今日续火花啦\\n今日一串：不是说钱能养人吗")
+        self.assertEqual(
+            out,
+            "[盖瑞]今日续火花啦[加一]\\n"
+            "[右边]今日一串：不是说钱能养人吗[左边]",
+        )
 
     def test_custom_wrapper_without_placeholder_appends_body(self):
         out = forms.wrap_ai_message(
@@ -281,7 +285,10 @@ class SelectAndBuildTest(unittest.TestCase):
         cfg = self._config(aiEnable="1", anthropic={"api_key": "x"})
         with patch.object(forms, "build_ai_message", return_value="AI写的火花"):
             out = forms.select_and_build(NORMAL_DAY, cfg)
-        self.assertEqual(out, "今日续火花啦\\n今日一串：AI写的火花")
+        self.assertEqual(
+            out,
+            "[盖瑞]今日续火花啦[加一]\\n[右边]今日一串：AI写的火花[左边]",
+        )
 
     def test_legacy_single_template_still_renders(self):
         # 向后兼容：仅设旧版单一模板，[API] 仍被一言替换
