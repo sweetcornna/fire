@@ -199,6 +199,10 @@ class BuildAiMessageTest(unittest.TestCase):
             forms.clean_ai_message("正事一件没干，续火花倒是挺积极")
         with self.assertRaises(ValueError):
             forms.clean_ai_message("你的胆子真是肥嘟嘟的")
+        with self.assertRaises(ValueError):
+            forms.clean_ai_message("你这脑回路装了几个减速带")
+        with self.assertRaises(ValueError):
+            forms.clean_ai_message("你站那儿一动不动等谁投币呢")
 
     def test_retries_rejected_and_duplicate_messages(self):
         cfg = {
