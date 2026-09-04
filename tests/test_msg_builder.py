@@ -163,12 +163,12 @@ class BuildAiMessageTest(unittest.TestCase):
         ):
             client = Anthropic.return_value
             client.messages.create.return_value = SimpleNamespace(
-                content=[SimpleNamespace(type="text", text="开学进行曲先停停，火续一下")]
+                content=[SimpleNamespace(type="text", text="开学进行曲先停停，这边续个火")]
             )
 
             out = forms.build_ai_message(NORMAL_DAY, cfg)
 
-        self.assertEqual(out, "开学进行曲先停停，火续一下")
+        self.assertEqual(out, "开学进行曲先停停，这边续个火")
         Anthropic.assert_called_once_with(
             api_key="fake-test-key", base_url="https://api.cornna.xyz"
         )
@@ -178,9 +178,13 @@ class BuildAiMessageTest(unittest.TestCase):
         self.assertIn("人在，火不能断", request["system"])
 
     def test_generated_message_naturalness_guard(self):
-        self.assertEqual(forms.clean_ai_message("文案：火续上，我继续潜水"), "火续上，我继续潜水")
+        self.assertEqual(forms.clean_ai_message("文案：火续上，继续潜水"), "火续上，继续潜水")
         with self.assertRaises(ValueError):
             forms.clean_ai_message("好的，今日份温暖已经送达！！")
+        with self.assertRaises(ValueError):
+            forms.clean_ai_message("刚刷到减脂教程，手里薯片突然不香了")
+        with self.assertRaises(ValueError):
+            forms.clean_ai_message("燕麦格雷先放放，正事别耽误")
 
 
 class SelectAndBuildTest(unittest.TestCase):

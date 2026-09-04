@@ -61,6 +61,7 @@ MAX_AI_MESSAGE_LENGTH = 32
 AI_OUTPUT_REJECT_PATTERNS = (
     r"^(当然|好的|以下|根据)",
     r"(搜索结果|最近抖音|热榜显示|这个梗的意思)",
+    r"(我|刚刷|刷到|刚看|看完|手里|照镜子)",
     r"https?://",
     r"[#]",
     r"[!！?？]{2,}",
@@ -104,6 +105,7 @@ def build_ai_prompt(
         "- 没有合适的就放弃热梗，写一句普通但自然的续火消息，绝对不要硬蹭\n"
         "要求：\n"
         "- 中文 8～24 个字，最多 32 个字符；只输出最终要发送的一句话\n"
+        "- 成品必须同时包含『续』和『火』两个字，让人一眼知道是在续火；热梗只是点缀\n"
         "- 允许短句、停顿、语气词和一点不规则节奏；最多 1 个 emoji，没有更自然就不用\n"
         "- 先删客套、铺垫、解释、总结，再检查一遍是否像人随手打出来的\n"
         "禁止：\n"
@@ -112,6 +114,7 @@ def build_ai_prompt(
         f"- 不要用这些 AI 味的词：{cliche}\n"
         "- 不要写『最近很火的梗是』『今日热榜』『搜索发现』，不要加标题、引号、话题标签或来源\n"
         "- 避免『不是……而是……』『不仅……更……』『愿你……』等完整模板句\n"
+        "- 不要说『我刚刷到』『刚看完』『我正在吃/穿/做』，不能编出发送者的现场经历\n"
         "- 不要再写『累了就歇会儿』『怎么舒服怎么来』『今天也要开开心心』这类批量祝福\n"
         "- 不要编造具体事件，不要假装有共同记忆，别提『上次 / 那件事 / 你说的那个』\n"
         "- 不要假装注意到对方的具体变化，"
@@ -175,6 +178,8 @@ def clean_ai_message(content: str) -> str:
 
     if len(message) < 4 or len(message) > MAX_AI_MESSAGE_LENGTH:
         raise ValueError("AI 返回消息长度不合格")
+    if "续" not in message or "火" not in message:
+        raise ValueError("AI 返回消息没有明确表达续火")
     if any(re.search(pattern, message) for pattern in AI_OUTPUT_REJECT_PATTERNS):
         raise ValueError("AI 返回消息未通过自然度检查")
     if any(word in message for word in AI_CLICHE_WORDS):
