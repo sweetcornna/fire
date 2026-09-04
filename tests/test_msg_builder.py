@@ -145,6 +145,9 @@ class BuildAiPromptTest(unittest.TestCase):
 
 
 class BuildAiMessageTest(unittest.TestCase):
+    def setUp(self):
+        forms.RECENT_AI_MESSAGES.clear()
+
     def test_gateway_uses_requested_gemini_model_and_hot_topics(self):
         cfg = {
             "aiPersonas": ["随手接梗"],
@@ -185,6 +188,35 @@ class BuildAiMessageTest(unittest.TestCase):
             forms.clean_ai_message("刚刷到减脂教程，手里薯片突然不香了")
         with self.assertRaises(ValueError):
             forms.clean_ai_message("燕麦格雷先放放，正事别耽误")
+        with self.assertRaises(ValueError):
+            forms.clean_ai_message("正事一件没干，续火花倒是挺积极")
+
+    def test_retries_rejected_and_duplicate_messages(self):
+        cfg = {
+            "aiPersonas": ["随手接梗"],
+            "anthropic": {
+                "api_key": "fake-test-key",
+                "base_url": "https://api.cornna.xyz",
+                "model": "gemini-3.8-flash-high",
+            },
+        }
+        responses = [
+            SimpleNamespace(
+                content=[SimpleNamespace(type="text", text="正事没干，续火最积极")]
+            ),
+            SimpleNamespace(
+                content=[SimpleNamespace(type="text", text="燕麦格雷先等等，火先续上")]
+            ),
+        ]
+
+        with patch("anthropic.Anthropic") as Anthropic, patch.object(
+            forms, "fetch_douyin_hot_topics", return_value=("now", ("燕麦格雷",))
+        ):
+            Anthropic.return_value.messages.create.side_effect = responses
+            out = forms.build_ai_message(NORMAL_DAY, cfg)
+
+        self.assertEqual(out, "燕麦格雷先等等，火先续上")
+        self.assertEqual(Anthropic.return_value.messages.create.call_count, 2)
 
 
 class SelectAndBuildTest(unittest.TestCase):

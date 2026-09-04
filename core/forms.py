@@ -9,6 +9,7 @@ core/forms.py
 """
 
 import re
+from collections import deque
 from datetime import date
 from random import choice
 
@@ -58,10 +59,12 @@ AI_CLICHE_WORDS = [
 ]
 
 MAX_AI_MESSAGE_LENGTH = 32
+AI_GENERATION_ATTEMPTS = 3
+RECENT_AI_MESSAGES = deque(maxlen=12)
 AI_OUTPUT_REJECT_PATTERNS = (
     r"^(当然|好的|以下|根据)",
     r"(搜索结果|最近抖音|热榜显示|这个梗的意思)",
-    r"(我|刚刷|刷到|刚看|看完|手里|照镜子)",
+    r"(我|刚刷|刷到|刚看|看完|手里|照镜子|正事.*没干|研究半天|穿不出)",
     r"https?://",
     r"[#]",
     r"[!！?？]{2,}",
@@ -102,6 +105,7 @@ def build_ai_prompt(
         "- 只考虑轻松、无害、能自然接进私聊的梗；一句话脱离原视频也要能看懂\n"
         "- 灾难、伤亡、政治、违法、低俗、饭圈争议、疾病和当事人负面事件一律不用\n"
         "- 只选一个梗，改写成聊天语气；不要复述榜单标题，不要解释梗\n"
+        "- 热梗只能点缀续火这件事，不能描述发送者已经刷、看、研究、吃、穿、买或做了什么\n"
         "- 没有合适的就放弃热梗，写一句普通但自然的续火消息，绝对不要硬蹭\n"
         "要求：\n"
         "- 中文 8～24 个字，最多 32 个字符；只输出最终要发送的一句话\n"
@@ -213,21 +217,35 @@ def build_ai_message(today: date, config) -> str:
     )
 
     client = Anthropic(api_key=api_key, base_url=base_url) if base_url else Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model=model,
-        max_tokens=128,  # 写人味短句不需要长输出
-        # 适度提温，减少不同好友收到同一句话的概率。
-        temperature=1.0,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}],
-    )
+    last_error = ValueError("AI 返回空内容")
+    for _attempt in range(AI_GENERATION_ATTEMPTS):
+        request_prompt = user_prompt
+        if RECENT_AI_MESSAGES:
+            recent = " / ".join(RECENT_AI_MESSAGES)
+            request_prompt += f"。不要与这些近期结果重复或只换同义词：{recent}"
 
-    content = "".join(
-        block.text for block in response.content if block.type == "text"
-    ).strip()
-    if not content:
-        raise ValueError("AI 返回空内容")
-    return clean_ai_message(content)
+        response = client.messages.create(
+            model=model,
+            max_tokens=128,  # 写人味短句不需要长输出
+            # 适度提温，减少不同好友收到同一句话的概率。
+            temperature=1.0,
+            system=system_prompt,
+            messages=[{"role": "user", "content": request_prompt}],
+        )
+
+        content = "".join(
+            block.text for block in response.content if block.type == "text"
+        ).strip()
+        try:
+            message = clean_ai_message(content)
+            if message in RECENT_AI_MESSAGES:
+                raise ValueError("AI 返回了重复消息")
+            RECENT_AI_MESSAGES.append(message)
+            return message
+        except ValueError as exc:
+            last_error = exc
+
+    raise last_error
 
 
 def select_and_build(today: date, config) -> str:
