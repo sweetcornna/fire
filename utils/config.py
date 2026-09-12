@@ -151,15 +151,26 @@ def get_userData():
             logger.warning(f"{username} 的任务  缺少 unique_id 字段，已跳过")
             continue
         cookies_key = f"cookies_{unique_id}".upper()
-        cookies_str = (
-            os.getenv(cookies_key, "").encode("utf-8").decode("unicode_escape")
-        )
-        if not cookies_str:
-            logger.warning(f"{username} 的任务 缺少 {cookies_key} 环境变量，已跳过")
-            continue
+        raw_cookies = os.getenv(cookies_key, "")
+        # GitHub's secret export historically stored JSON with escaped
+        # unicode, while the server-side file is ordinary UTF-8 JSON.  Parse
+        # the raw value first and only apply the legacy unescape as fallback.
+        cookies_str = raw_cookies
         try:
             cookies = json.loads(cookies_str)
         except json.JSONDecodeError:
+            cookies_str = raw_cookies.encode("utf-8").decode("unicode_escape")
+            cookies = None
+        if not cookies_str:
+            logger.warning(f"{username} 的任务 缺少 {cookies_key} 环境变量，已跳过")
+            continue
+        if cookies is None:
+            try:
+                cookies = json.loads(cookies_str)
+            except json.JSONDecodeError:
+                logger.warning(f"{username} 的任务 {cookies_key} 格式不正确，已跳过")
+                continue
+        if not isinstance(cookies, list):
             logger.warning(f"{username} 的任务 {cookies_key} 格式不正确，已跳过")
             continue
 
