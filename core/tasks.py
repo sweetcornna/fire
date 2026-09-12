@@ -21,7 +21,12 @@ userIDDict = {}
 CONVERSATION_ITEM_SELECTOR = ".conversationConversationItemwrapper"
 CONVERSATION_TITLE_SELECTOR = ".conversationConversationItemtitle"
 CONVERSATION_LIST_SELECTOR = ".conversationConversationListwrapper"
-CHAT_EDITOR_SELECTOR = ".messageEditorimChatEditorContainer"
+# Douyin changed the editor wrapper class; the stable contenteditable marker
+# is present on current chat pages while the legacy class remains supported.
+CHAT_EDITOR_SELECTOR = (
+    '[contenteditable="true"][data-placeholder="发送消息"], '
+    ".messageEditorimChatEditorContainer"
+)
 SEARCH_INPUT_SELECTORS = (
     'input[placeholder*="搜索"]',
     'input[aria-label*="搜索"]',
