@@ -23,7 +23,7 @@ def get_browser():
     :return: 浏览器实例
     """
 
-    headless = True
+    headless = os.getenv("HEADLESS", "1").strip().lower() not in {"0", "false", "no", "off"}
 
     env = get_environment()
     if env == Environment.LOCAL:
@@ -40,7 +40,11 @@ def get_browser():
     try:
         # 启动浏览器
         playwright = sync_playwright().start() 
-        browser = playwright.chromium.launch(headless=headless)
+        launch_kwargs = {"headless": headless}
+        executable_path = os.getenv("PLAYWRIGHT_EXECUTABLE_PATH", "").strip()
+        if executable_path:
+            launch_kwargs["executable_path"] = executable_path
+        browser = playwright.chromium.launch(**launch_kwargs)
         return playwright, browser
     except Exception as e:
         # 捕获浏览器启动错误
