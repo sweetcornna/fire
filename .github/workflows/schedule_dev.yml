@@ -45,6 +45,15 @@ jobs:
       env:
         VARS_JSON: ${{ toJson(vars) }}
       run: python utils/export_github_env.py
+    - name: Restore daily delivery state
+      id: delivery-date
+      run: |
+        mkdir -p .state
+        echo "today=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v4
+      with:
+        path: .state/delivery-state.json
+        key: huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}
     - name: Run DouYin Spark Flow
       env:
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -56,6 +65,7 @@ jobs:
         TASK_RETRY_TIMES: "1"
         CHAT_SEARCH_RESULT_WAIT_SECONDS: "2"
         HEADLESS: "1"
+        DELIVERY_STATE_FILE: .state/delivery-state.json
         REQUIRE_ALL_TARGETS: "1"
       run: python main.py
     - uses: actions/upload-artifact@v4
