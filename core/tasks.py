@@ -498,7 +498,28 @@ def _dismiss_login_prompt(page, username):
     if "是否保存登录信息" not in body:
         return False
 
-    for label in ("保存", "取消"):
+    # The dialog title also contains the word "保存".  A global text locator
+    # can therefore click the non-interactive title and leave the modal open.
+    # Prefer the dialog's actual button classes and keep the text fallback for
+    # lightweight test doubles and older page revisions.
+    button_selectors = (
+        ".trust-login-dialog-button-cancel",
+        ".trust-login-dialog-button-confirm",
+    )
+    for selector in button_selectors:
+        try:
+            locator = page.locator(selector)
+            for index in range(locator.count()):
+                candidate = locator.nth(index)
+                if not candidate.is_visible():
+                    continue
+                candidate.click()
+                logger.debug(f"账号 {username} 已关闭抖音登录提示: {selector}")
+                time.sleep(0.5)
+                return True
+        except Exception:
+            continue
+    for label in ("取消", "保存"):
         try:
             locator = page.get_by_text(label, exact=True)
             for index in range(locator.count()):
