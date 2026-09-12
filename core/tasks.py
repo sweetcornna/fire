@@ -873,7 +873,9 @@ def do_user_task(browser, username, cookies, targets):
                 request.method,
                 request.url,
                 headers=headers,
-                data=request.post_data,
+                # post_data decodes the body as UTF-8 and fails for Douyin's
+                # binary/compressed request payload.  Keep the exact bytes.
+                data=request.post_data_buffer,
                 timeout=30,
             )
             response_headers = {
@@ -959,6 +961,13 @@ def do_user_task(browser, username, cookies, targets):
     if targets and sent_count == 0:
         raise RuntimeError(
             f"账号 {account_name} 本次没有成功发送任何消息；请查看页面状态日志"
+        )
+    if targets and os.getenv("REQUIRE_ALL_TARGETS", "0").strip().lower() in {
+        "1", "true", "yes", "on"
+    } and sent_count < len(targets):
+        raise RuntimeError(
+            f"账号 {account_name} 未完成全部发送: {sent_count}/{len(targets)}；"
+            "本次任务标记为失败，等待下次重试"
         )
     logger.info(
         f"账号 {account_name} 本次发送完成: {sent_count}/{len(targets)} 个目标"
