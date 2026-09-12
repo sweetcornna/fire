@@ -35,6 +35,7 @@ MAX_USER_SEARCH_SNIPPETS = 40
 MAX_EMPTY_SCROLLS = 10
 DEFAULT_SEARCH_ACTION_TIMEOUT_MS = 5000
 DEFAULT_CHAT_OPEN_TIMEOUT_MS = 10000
+FALLBACK_ELEMENT_TIMEOUT_MS = 1500
 
 
 def _norm_value(value) -> str:
@@ -383,7 +384,11 @@ def _box_value(box, key):
 
 def _search_input_score(page, candidate):
     try:
-        list_box = page.locator(CONVERSATION_LIST_SELECTOR).bounding_box()
+        list_locator = page.locator(CONVERSATION_LIST_SELECTOR)
+        try:
+            list_box = list_locator.bounding_box(timeout=FALLBACK_ELEMENT_TIMEOUT_MS)
+        except TypeError:
+            list_box = list_locator.bounding_box()
         candidate_box = candidate.bounding_box()
     except Exception:
         return 1000
@@ -406,6 +411,14 @@ def _search_input_score(page, candidate):
     return 500 + vertical_gap
 
 
+def _element_handle_with_timeout(locator, timeout):
+    """Get an element handle without breaking lightweight test doubles."""
+    try:
+        return locator.element_handle(timeout=timeout)
+    except TypeError:
+        return locator.element_handle()
+
+
 def find_search_input(page):
     candidates = []
     candidate_order = 0
@@ -426,6 +439,40 @@ def find_search_input(page):
         logger.debug(f"找到聊天搜索框: {selector} #{index}，score={score}")
         return candidate
     return None
+
+
+def _page_state(page):
+    """Return a small, non-sensitive diagnostic snapshot for UI failures."""
+    try:
+        return page.evaluate(
+            """() => ({
+                url: location.href,
+                title: document.title,
+                body: (document.body?.innerText || '').replace(/\\s+/g, ' ').slice(0, 500)
+            })"""
+        )
+    except Exception:
+        return {"url": "", "title": "", "body": ""}
+
+
+def _fallback_search_targets(page, username, remaining_targets):
+    """Use the page search UI when the virtualized list container is unavailable."""
+    if not remaining_targets:
+        return set()
+    logger.warning(
+        f"账号 {username} 好友列表容器不可用，切换搜索兜底；页面状态: {_page_state(page)}"
+    )
+    found = set()
+    for target in list(remaining_targets):
+        try:
+            target_symbol = search_and_select_target(page, username, target)
+        except Exception as error:
+            logger.warning(f"账号 {username} 搜索兜底目标 {target} 失败: {error}")
+            continue
+        if target_symbol:
+            found.add(target_symbol)
+            yield target_symbol
+    return found
 
 
 def _chat_target_match(page, target):
@@ -708,9 +755,27 @@ def scroll_and_select_user(page, username, targets):
             #     # 不 break，继续去滚动以触发后续内容
 
             # 4. 滚动容器
-            scrollable_element = page.locator(
-                scrollable_friends_selector
-            ).element_handle()
+            try:
+                scrollable_element = _element_handle_with_timeout(
+                    page.locator(scrollable_friends_selector),
+                    FALLBACK_ELEMENT_TIMEOUT_MS,
+                )
+            except Exception as error:
+                logger.warning(
+                    f"账号 {username} 未找到好友列表滚动容器 ({error})，"
+                    "立即使用搜索兜底"
+                )
+                for target_symbol in _fallback_search_targets(
+                    page, username, remaining_targets
+                ):
+                    if target_symbol in remaining_targets:
+                        remaining_targets.remove(target_symbol)
+                    yield target_symbol
+                if remaining_targets:
+                    logger.error(
+                        f"账号 {username} 搜索兜底后仍未找到好友: {remaining_targets}"
+                    )
+                return
 
             if scrollable_element:
                 # [修复] 记录滚动前的 scrollTop，用于检测是否真的滚动了
@@ -741,11 +806,24 @@ def scroll_and_select_user(page, username, targets):
 
                 time.sleep(1.5)
             else:
-                logger.error(f"账号 {username} 未找到滚动容器，退出")
-                break
+                logger.warning(
+                    f"账号 {username} 未找到好友列表滚动容器，立即使用搜索兜底"
+                )
+                for target_symbol in _fallback_search_targets(
+                    page, username, remaining_targets
+                ):
+                    if target_symbol in remaining_targets:
+                        remaining_targets.remove(target_symbol)
+                    yield target_symbol
+                if remaining_targets:
+                    logger.error(
+                        f"账号 {username} 搜索兜底后仍未找到好友: {remaining_targets}"
+                    )
+                return
 
 
 def do_user_task(browser, username, cookies, targets):
+    account_name = username
     context = browser.new_context()  # 每个任务使用独立的上下文
     context.set_default_navigation_timeout(
         config["browserTimeout"]
@@ -785,6 +863,7 @@ def do_user_task(browser, username, cookies, targets):
 
     logger.debug(f"账号 {username} 开始发送消息")
     # 滚动并选择用户
+    sent_count = 0
     for username in scroll_and_select_user(page, username, targets):
         logger.debug(f"账号 {username} 已选中好友 {username} 发送消息")
         # 等待聊天输入框元素加载完成，使用更稳定的属性选择器
@@ -806,8 +885,16 @@ def do_user_task(browser, username, cookies, targets):
         # 模拟按下回车键发送消息
         chat_input.press("Enter")
         time.sleep(2)  # 发送完等待一会儿
+        sent_count += 1
 
     context.close()  # 任务完成后关闭上下文
+    if targets and sent_count == 0:
+        raise RuntimeError(
+            f"账号 {account_name} 本次没有成功发送任何消息；请查看页面状态日志"
+        )
+    logger.info(
+        f"账号 {account_name} 本次发送完成: {sent_count}/{len(targets)} 个目标"
+    )
 
 
 def runTasks():
