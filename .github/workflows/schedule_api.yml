@@ -42,9 +42,10 @@ jobs:
       run: python utils/export_github_env.py
     - name: Run DouYin Spark Flow
       env:
-        BROWSER_TIMEOUT: "60000"
+        BROWSER_TIMEOUT: "30000"
         CHAT_OPEN_TIMEOUT: "15000"
-        TASK_RETRY_TIMES: "3"
+        TASK_RETRY_TIMES: "1"
+        CHAT_SEARCH_RESULT_WAIT_SECONDS: "2"
         HEADLESS: "1"
         REQUIRE_ALL_TARGETS: "1"
       run: python main.py
