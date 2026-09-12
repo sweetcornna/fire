@@ -48,6 +48,7 @@ jobs:
         COOKIES_33217367887: ${{ secrets.COOKIES_33217367887 }}
         PREVIEW_ONLY: ${{ inputs.preview_only || 'false' }}
         AI_PREVIEW_COUNT: ${{ inputs.preview_count || '5' }}
+        REQUIRE_ALL_TARGETS: "1"
       run: python main.py
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}

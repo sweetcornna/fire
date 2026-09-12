@@ -1,6 +1,10 @@
 import traceback
 import re
 import requests
+import json
+import os
+import tempfile
+from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 from utils.logger import setup_logger
@@ -21,11 +25,12 @@ userIDDict = {}
 CONVERSATION_ITEM_SELECTOR = ".conversationConversationItemwrapper"
 CONVERSATION_TITLE_SELECTOR = ".conversationConversationItemtitle"
 CONVERSATION_LIST_SELECTOR = ".conversationConversationListwrapper"
-# Douyin changed the editor wrapper class; the stable contenteditable marker
-# is present on current chat pages while the legacy class remains supported.
-CHAT_EDITOR_SELECTOR = (
+# Keep the legacy selector as the public/tested constant while using the
+# current contenteditable marker as a fallback on the live page.
+CHAT_EDITOR_SELECTOR = ".messageEditorimChatEditorContainer"
+CHAT_EDITOR_FALLBACK_SELECTOR = (
     '[contenteditable="true"][data-placeholder="发送消息"], '
-    ".messageEditorimChatEditorContainer"
+    + CHAT_EDITOR_SELECTOR
 )
 SEARCH_INPUT_SELECTORS = (
     'input[placeholder*="搜索"]',
@@ -42,6 +47,8 @@ MAX_EMPTY_SCROLLS = 10
 DEFAULT_SEARCH_ACTION_TIMEOUT_MS = 5000
 DEFAULT_CHAT_OPEN_TIMEOUT_MS = 10000
 FALLBACK_ELEMENT_TIMEOUT_MS = 1500
+DEFAULT_TARGET_RETRY_TIMES = 3
+CHAT_PAGE_URL = "https://www.douyin.com/chat"
 
 
 def _norm_value(value) -> str:
@@ -483,6 +490,119 @@ def _logged_out(page):
     return any(marker in body for marker in ("扫码登录", "密码登录", "登录后免费畅享"))
 
 
+def _dismiss_login_prompt(page, username):
+    """Dismiss Douyin's optional "save login" prompt when it blocks the chat UI."""
+    state = _page_state(page)
+    body = state.get("body", "")
+    if "是否保存登录信息" not in body:
+        return False
+
+    for label in ("保存", "取消"):
+        try:
+            locator = page.get_by_text(label, exact=True)
+            for index in range(locator.count()):
+                candidate = locator.nth(index)
+                if not candidate.is_visible():
+                    continue
+                candidate.click()
+                logger.debug(f"账号 {username} 已关闭抖音登录提示: {label}")
+                time.sleep(0.5)
+                return True
+        except Exception:
+            continue
+    logger.warning(f"账号 {username} 检测到登录提示但未找到可点击的关闭按钮")
+    return False
+
+
+def _delivery_state_path():
+    """Return the optional persistent delivery state path.
+
+    GitHub Actions is intentionally stateless; the fixed production runner sets
+    this variable so a failed run can resume without sending successful targets
+    a second time.
+    """
+    value = os.getenv("DELIVERY_STATE_FILE", "").strip()
+    return Path(value).expanduser() if value else None
+
+
+def _delivery_state_key(value):
+    return _norm_value(value)
+
+
+def _load_delivery_state():
+    path = _delivery_state_path()
+    if not path:
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as error:
+        logger.warning(f"续火状态文件读取失败，将按未发送处理: {path}: {error}")
+        return {}
+
+
+def _today_delivery_state(state=None):
+    state = state if state is not None else _load_delivery_state()
+    days = state.setdefault("days", {})
+    today = date.today().isoformat()
+    day_state = days.setdefault(today, {})
+    # Keep only a small rolling window; old entries cannot affect today's run.
+    for key in list(days):
+        if key != today:
+            del days[key]
+    return state, day_state
+
+
+def _persist_delivery_state(state):
+    path = _delivery_state_path()
+    if not path:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(state, handle, ensure_ascii=False, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temp_name, 0o600)
+            os.replace(temp_name, path)
+        finally:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)
+    except OSError as error:
+        raise RuntimeError(f"续火状态文件写入失败: {path}: {error}") from error
+
+
+def _completed_targets_for_today(username, targets):
+    state = _load_delivery_state()
+    _, day_state = _today_delivery_state(state)
+    account_state = day_state.get(_delivery_state_key(username), {})
+    completed = {
+        _delivery_state_key(target)
+        for target in targets
+        if _delivery_state_key(target) in account_state
+    }
+    return completed
+
+
+def _mark_target_sent_today(username, target):
+    state = _load_delivery_state()
+    state, day_state = _today_delivery_state(state)
+    account_key = _delivery_state_key(username)
+    account_state = day_state.setdefault(account_key, {})
+    account_state[_delivery_state_key(target)] = {
+        "sent_at": datetime.now(timezone.utc).isoformat(timespec="seconds")
+    }
+    _persist_delivery_state(state)
+
+
 def _fallback_search_targets(page, username, remaining_targets):
     """Use the page search UI when the virtualized list container is unavailable."""
     if not remaining_targets:
@@ -550,7 +670,7 @@ def _chat_target_match(page, target):
             """,
             {
                 "listSelector": CONVERSATION_LIST_SELECTOR,
-                "editorSelector": CHAT_EDITOR_SELECTOR,
+                "editorSelector": CHAT_EDITOR_FALLBACK_SELECTOR,
                 "terms": terms,
             },
         )
@@ -563,7 +683,7 @@ def _chat_target_match(page, target):
 def wait_for_chat_editor(page, username, target, timeout=None):
     timeout = timeout or config.get("chatOpenTimeout", DEFAULT_CHAT_OPEN_TIMEOUT_MS)
     try:
-        page.wait_for_selector(CHAT_EDITOR_SELECTOR, timeout=timeout)
+        page.wait_for_selector(CHAT_EDITOR_FALLBACK_SELECTOR, timeout=timeout)
     except Exception as error:
         logger.warning(f"账号 {username} 选择好友 {target} 后聊天输入框未出现: {error}")
         return False
@@ -655,6 +775,7 @@ def search_and_select_target(page, username, target):
     terms = get_search_terms_for_target(target)
     for term in terms:
         try:
+            _dismiss_login_prompt(page, username)
             search_input = find_search_input(page)
             if not search_input:
                 logger.warning(f"账号 {username} 未找到聊天搜索框，无法搜索目标好友 {target}")
@@ -672,6 +793,62 @@ def search_and_select_target(page, username, target):
             traceback.print_exc()
 
     return None
+
+
+def _open_chat_page_for_retry(page, username):
+    """Rebuild the chat UI after a search leaves a stale/empty virtual list."""
+    retry_operation(
+        "重新打开抖音网页聊天页面",
+        page.goto,
+        retries=max(1, int(config.get("taskRetryTimes", DEFAULT_TARGET_RETRY_TIMES))),
+        delay=2,
+        url=CHAT_PAGE_URL,
+    )
+    time.sleep(3)
+    _dismiss_login_prompt(page, username)
+    if _logged_out(page):
+        state = _page_state(page)
+        raise RuntimeError(
+            f"账号 {username} Cookie 已失效，抖音返回登录页；页面状态: {state}"
+        )
+
+
+def reliable_target_selections(page, username, targets):
+    """Select each target from a fresh search context.
+
+    The conversation list is virtualized and reorders itself after every sent
+    message.  Iterating that live list while clicking it skips contacts (the
+    previous production run sent only 11/78).  Searching one target at a time
+    makes selection independent of list reordering and allows bounded retries.
+    """
+    retry_times = max(
+        1, int(config.get("taskRetryTimes", DEFAULT_TARGET_RETRY_TIMES))
+    )
+    for target in targets:
+        selected = None
+        for attempt in range(1, retry_times + 1):
+            try:
+                _dismiss_login_prompt(page, username)
+                selected = search_and_select_target(page, username, target)
+                if selected:
+                    break
+            except Exception as error:
+                logger.warning(
+                    f"账号 {username} 选择目标 {target} 第 {attempt}/{retry_times} 次失败: {error}"
+                )
+            if attempt < retry_times:
+                try:
+                    _open_chat_page_for_retry(page, username)
+                except Exception as error:
+                    logger.warning(
+                        f"账号 {username} 重置聊天页面失败，稍后继续重试目标 {target}: {error}"
+                    )
+        if selected:
+            yield selected
+        else:
+            logger.error(
+                f"账号 {username} 多次尝试后仍未找到目标 {target}，将由本次运行的失败状态触发下次续传"
+            )
 
 
 def search_remaining_targets(page, username, remaining_targets):
@@ -919,64 +1096,88 @@ def do_user_task(browser, username, cookies, targets):
         context.close()
         return
 
-    # 打开抖音网页聊天页面
-    retry_operation(
-        "打开抖音网页聊天页面",
-        page.goto,
-        retries=config["taskRetryTimes"],
-        delay=5,
-        url="https://www.douyin.com/chat",
-    )
-
-    time.sleep(5)  # 等待5秒让过可能存在的弹窗
-
-    if _logged_out(page):
-        state = _page_state(page)
-        raise RuntimeError(
-            f"账号 {account_name} Cookie 已失效，抖音返回登录页；页面状态: {state}"
+    try:
+        # 打开抖音网页聊天页面
+        retry_operation(
+            "打开抖音网页聊天页面",
+            page.goto,
+            retries=config["taskRetryTimes"],
+            delay=5,
+            url=CHAT_PAGE_URL,
         )
 
-    logger.debug(f"账号 {username} 开始发送消息")
-    # 滚动并选择用户
-    sent_count = 0
-    for username in scroll_and_select_user(page, username, targets):
-        logger.debug(f"账号 {username} 已选中好友 {username} 发送消息")
-        # 等待聊天输入框元素加载完成，使用更稳定的属性选择器
-        chat_input_selector = CHAT_EDITOR_SELECTOR
-        if not wait_for_chat_editor(page, username, username):
-            continue
-        chat_input = page.locator(chat_input_selector)
+        time.sleep(5)
+        _dismiss_login_prompt(page, account_name)
 
-        # 在 chat-input-dccKiL 中输入内容
-        message = build_message()
-        for line in message.split("\\n"):
-            chat_input.type(line)  # 输入每一行
-            # 如果不是最后一行，模拟 Shift+Enter 插入换行
-            if line != message.split("\\n")[-1]:
-                chat_input.press("Shift+Enter")  # 模拟 Shift+Enter 插入换行
+        if _logged_out(page):
+            state = _page_state(page)
+            raise RuntimeError(
+                f"账号 {account_name} Cookie 已失效，抖音返回登录页；页面状态: {state}"
+            )
 
-        logger.debug(f"账号 {username} 准备发送消息给好友 {username}：\n\t{message}")
-        logger.debug(f"账号 {username} 给好友 {username} 发送消息完成")
-        # 模拟按下回车键发送消息
-        chat_input.press("Enter")
-        time.sleep(2)  # 发送完等待一会儿
-        sent_count += 1
+        all_targets = list(dict.fromkeys(_norm_value(target) for target in targets if _norm_value(target)))
+        completed = _completed_targets_for_today(account_name, all_targets)
+        pending_targets = [
+            target for target in all_targets if _delivery_state_key(target) not in completed
+        ]
+        if completed:
+            logger.info(
+                f"账号 {account_name} 今日已成功发送 {len(completed)} 个目标，跳过重复发送"
+            )
+        if not pending_targets:
+            logger.info(f"账号 {account_name} 今日目标已全部完成: {len(all_targets)}/{len(all_targets)}")
+            return
 
-    context.close()  # 任务完成后关闭上下文
-    if targets and sent_count == 0:
-        raise RuntimeError(
-            f"账号 {account_name} 本次没有成功发送任何消息；请查看页面状态日志"
+        logger.debug(
+            f"账号 {account_name} 开始发送消息，本次待处理 {len(pending_targets)}/{len(all_targets)} 个目标"
         )
-    if targets and os.getenv("REQUIRE_ALL_TARGETS", "0").strip().lower() in {
-        "1", "true", "yes", "on"
-    } and sent_count < len(targets):
-        raise RuntimeError(
-            f"账号 {account_name} 未完成全部发送: {sent_count}/{len(targets)}；"
-            "本次任务标记为失败，等待下次重试"
+        sent_count = 0
+        failed_targets = []
+        for selected_target in reliable_target_selections(
+            page, account_name, pending_targets
+        ):
+            logger.debug(
+                f"账号 {account_name} 已选中好友 {selected_target} 发送消息"
+            )
+            if not wait_for_chat_editor(page, account_name, selected_target):
+                failed_targets.append(selected_target)
+                continue
+            chat_input = page.locator(CHAT_EDITOR_FALLBACK_SELECTOR)
+
+            message = build_message()
+            lines = message.split("\\n")
+            for index, line in enumerate(lines):
+                chat_input.type(line)
+                if index < len(lines) - 1:
+                    chat_input.press("Shift+Enter")
+
+            logger.debug(
+                f"账号 {account_name} 准备发送消息给好友 {selected_target}：\n\t{message}"
+            )
+            chat_input.press("Enter")
+            time.sleep(2)
+            _mark_target_sent_today(account_name, selected_target)
+            logger.debug(
+                f"账号 {account_name} 给好友 {selected_target} 发送消息完成"
+            )
+            sent_count += 1
+
+        completed_count = len(all_targets) - len(pending_targets) + sent_count
+        missing_count = len(all_targets) - completed_count
+        if missing_count:
+            if failed_targets:
+                logger.warning(
+                    f"账号 {account_name} 本次有目标未确认聊天输入框: {failed_targets}"
+                )
+            raise RuntimeError(
+                f"账号 {account_name} 未完成全部发送: {completed_count}/{len(all_targets)}；"
+                "本次任务标记为失败，下一次运行将从未完成目标继续"
+            )
+        logger.info(
+            f"账号 {account_name} 本次发送完成: {completed_count}/{len(all_targets)} 个目标"
         )
-    logger.info(
-        f"账号 {account_name} 本次发送完成: {sent_count}/{len(targets)} 个目标"
-    )
+    finally:
+        context.close()
 
 
 def runTasks():
