@@ -51,6 +51,7 @@ jobs:
         mkdir -p .state
         echo "today=$(date -u +%F)" >> "$GITHUB_OUTPUT"
     - uses: actions/cache@v4
+      id: delivery-cache
       with:
         path: .state/delivery-state.json
         key: huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}
@@ -68,6 +69,11 @@ jobs:
         DELIVERY_STATE_FILE: .state/delivery-state.json
         REQUIRE_ALL_TARGETS: "1"
       run: python main.py
+    - uses: actions/cache/save@v4
+      if: ${{ always() && steps.delivery-cache.outputs.cache-hit != 'true' }}
+      with:
+        path: .state/delivery-state.json
+        key: huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}
       with:
