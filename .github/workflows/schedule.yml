@@ -33,6 +33,10 @@ jobs:
       run: python utils/export_github_env.py
     - name: Run DouYin Spark Flow
       env:
+        BROWSER_TIMEOUT: "60000"
+        CHAT_OPEN_TIMEOUT: "15000"
+        TASK_RETRY_TIMES: "3"
+        HEADLESS: "1"
         REQUIRE_ALL_TARGETS: "1"
       run: python main.py
     - uses: actions/upload-artifact@v4
