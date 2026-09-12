@@ -881,7 +881,7 @@ def _open_chat_page_for_retry(page, username):
         retries=max(1, int(config.get("taskRetryTimes", DEFAULT_TARGET_RETRY_TIMES))),
         delay=2,
         url=CHAT_PAGE_URL,
-        wait_until="domcontentloaded",
+        wait_until="commit",
     )
     time.sleep(3)
     _dismiss_login_prompt(page, username)
@@ -1194,7 +1194,7 @@ def do_user_task(browser, username, cookies, targets):
             retries=config["taskRetryTimes"],
             delay=5,
             url=CHAT_PAGE_URL,
-            wait_until="domcontentloaded",
+            wait_until="commit",
         )
 
         time.sleep(5)
