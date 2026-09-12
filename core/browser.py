@@ -23,14 +23,23 @@ def get_browser():
     :return: 浏览器实例
     """
 
-    headless = os.getenv("HEADLESS", "1").strip().lower() not in {"0", "false", "no", "off"}
+    # An explicit HEADLESS setting must win over the local debug default.  The
+    # project keeps DEBUG=True for interactive development, while production
+    # cron runs without an X server and therefore must be able to force
+    # headless mode.
+    headless_override = os.getenv("HEADLESS")
+    headless = (
+        True
+        if headless_override is None
+        else headless_override.strip().lower() not in {"0", "false", "no", "off"}
+    )
 
     env = get_environment()
     if env == Environment.LOCAL:
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.abspath(
             os.path.join(os.path.dirname(__file__), PLAYWRIGHT_BROWSERS_PATH)
         )
-        if DEBUG:
+        if DEBUG and headless_override is None:
             headless = False
     elif env == Environment.PACKED:
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.abspath(
