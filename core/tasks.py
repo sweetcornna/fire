@@ -1,5 +1,6 @@
 import traceback
 import re
+import requests
 from pathlib import Path
 from urllib.parse import quote
 from utils.logger import setup_logger
@@ -855,6 +856,45 @@ def do_user_task(browser, username, cookies, targets):
     )  # 设置所有操作的默认超时时间为 120 秒
 
     page = context.new_page()
+
+    # The chat page's conversation search API currently omits CORS headers.
+    # Proxy only that API through the already-authenticated runner so the
+    # browser can receive the same response and search older contacts.
+    def proxy_conversation_api(route):
+        request = route.request
+        if "imapi.douyin.com" not in request.url:
+            route.continue_()
+            return
+        try:
+            headers = request.all_headers()
+            headers.pop("host", None)
+            headers.pop("content-length", None)
+            upstream = requests.request(
+                request.method,
+                request.url,
+                headers=headers,
+                data=request.post_data,
+                timeout=30,
+            )
+            response_headers = {
+                key: value
+                for key, value in upstream.headers.items()
+                if key.lower() in {"content-type", "cache-control"}
+            }
+            route.fulfill(
+                status=upstream.status_code,
+                headers=response_headers,
+                body=upstream.content,
+            )
+            logger.debug(
+                f"账号 {username} 已代理抖音会话搜索接口: "
+                f"status={upstream.status_code} url={request.url.split('?')[0]}"
+            )
+        except Exception as error:
+            logger.warning(f"账号 {username} 代理抖音会话搜索接口失败: {error}")
+            route.continue_()
+
+    page.route("https://imapi.douyin.com/**", proxy_conversation_api)
 
     page.on("response", handle_response)  # 监听响应，收集好友完整信息用于匹配
 
