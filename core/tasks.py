@@ -606,7 +606,7 @@ def _mark_target_sent_today(username, target):
     _persist_delivery_state(state)
 
 
-def _send_message_to_target(page, account_name, target):
+def _send_message_to_target(page, account_name, target, message=None):
     """Select, verify, and send one target's message.
 
     A target is considered delivered only after the chat editor is confirmed
@@ -621,7 +621,7 @@ def _send_message_to_target(page, account_name, target):
         raise RuntimeError(f"目标好友 {target} 的聊天输入框未确认")
 
     chat_input = page.locator(CHAT_EDITOR_FALLBACK_SELECTOR)
-    message = build_message()
+    message = message or build_message()
     lines = message.split("\\n")
     for index, line in enumerate(lines):
         chat_input.type(line)
@@ -638,13 +638,13 @@ def _send_message_to_target(page, account_name, target):
     return selected_target
 
 
-def _send_target_with_retries(page, account_name, target):
+def _send_target_with_retries(page, account_name, target, message=None):
     """Send one target with a fresh chat page between bounded attempts."""
     retry_times = max(1, int(config.get("taskRetryTimes", DEFAULT_TARGET_RETRY_TIMES)))
     for attempt in range(1, retry_times + 1):
         try:
             _dismiss_login_prompt(page, account_name)
-            return _send_message_to_target(page, account_name, target)
+            return _send_message_to_target(page, account_name, target, message)
         except Exception as error:
             logger.warning(
                 f"账号 {account_name} 发送目标 {target} 第 {attempt}/{retry_times} 次失败: {error}"
@@ -1208,8 +1208,9 @@ def do_user_task(browser, username, cookies, targets):
         )
         sent_count = 0
         failed_targets = []
+        message = build_message()
         for target in pending_targets:
-            if _send_target_with_retries(page, account_name, target):
+            if _send_target_with_retries(page, account_name, target, message):
                 sent_count += 1
             else:
                 failed_targets.append(target)
