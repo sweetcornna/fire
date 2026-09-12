@@ -46,6 +46,7 @@ jobs:
         CHAT_OPEN_TIMEOUT: "2000"
         TASK_RETRY_TIMES: "1"
         CHAT_SEARCH_RESULT_WAIT_SECONDS: "2"
+        ALLOW_GLOBAL_USER_SEARCH: "1"
         HEADLESS: "1"
         REQUIRE_ALL_TARGETS: "1"
       run: python main.py

@@ -97,6 +97,7 @@ def _set_default_environment():
         "CHAT_OPEN_TIMEOUT": "2000",
         "TASK_RETRY_TIMES": "1",
         "CHAT_SEARCH_RESULT_WAIT_SECONDS": "2",
+        "ALLOW_GLOBAL_USER_SEARCH": "1",
         "LOG_LEVEL": "INFO",
         "REQUIRE_ALL_TARGETS": "1",
         "DELIVERY_STATE_FILE": "/var/lib/huohua/delivery-state.json",
