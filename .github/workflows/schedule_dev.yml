@@ -14,9 +14,12 @@ on:
         required: false
         default: "5"
         type: string
+concurrency:
+  group: douyin-spark-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   run-main:
-    timeout-minutes: 20
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     environment: user-data
     steps:

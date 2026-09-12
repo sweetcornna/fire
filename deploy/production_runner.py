@@ -1,8 +1,9 @@
-"""Entry point for the fixed production host.
+"""Validated entry point for a durable production deployment.
 
-The regular project entry point reads GitHub Actions environment variables.  A
-server has durable, root-owned JSON files instead, so this adapter loads those
-files and then delegates to the exact same application code.
+The application itself consumes the same environment variables as GitHub
+Actions. This adapter is deliberately strict: a malformed task or cookie
+file must fail the run loudly instead of producing a successful run that
+silently skipped an account.
 """
 
 import json
@@ -11,40 +12,125 @@ import sys
 from pathlib import Path
 
 
-def _read(path_value):
+ROOT_DIR = Path(__file__).resolve().parents[1]
+
+
+def _read_json(path_value, label):
     path = Path(path_value).expanduser()
-    return path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise RuntimeError(f"{label}读取失败: {path}: {error}") from error
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"{label}不是有效 JSON: {path}: {error}") from error
+
+
+def _validate_tasks(value, path):
+    if not isinstance(value, list) or not value:
+        raise RuntimeError(f"任务文件为空或格式错误: {path}")
+
+    seen_ids = set()
+    normalized = []
+    for index, task in enumerate(value, start=1):
+        if not isinstance(task, dict):
+            raise RuntimeError(f"任务文件第 {index} 项不是对象: {path}")
+        unique_id = str(task.get("unique_id") or "").strip()
+        if not unique_id:
+            raise RuntimeError(f"任务文件第 {index} 项缺少 unique_id: {path}")
+        if unique_id in seen_ids:
+            raise RuntimeError(f"任务文件包含重复 unique_id={unique_id}: {path}")
+        seen_ids.add(unique_id)
+
+        targets = task.get("targets")
+        if not isinstance(targets, list) or not any(
+            str(target).strip() for target in targets
+        ):
+            raise RuntimeError(f"任务文件第 {index} 项没有有效 targets: {path}")
+        normalized.append(task)
+    return normalized
+
+
+def _cookie_payload_for_task(cookie_value, unique_id, path):
+    """Return one Playwright cookie list from either supported file shape."""
+    if isinstance(cookie_value, list):
+        payload = cookie_value
+    elif isinstance(cookie_value, dict):
+        candidates = (
+            unique_id,
+            f"COOKIES_{unique_id}",
+            f"cookies_{unique_id}",
+        )
+        payload = next(
+            (cookie_value.get(key) for key in candidates if key in cookie_value),
+            None,
+        )
+    else:
+        payload = None
+
+    if not isinstance(payload, list) or not payload:
+        raise RuntimeError(
+            f"Cookie 文件中没有账号 {unique_id} 的有效 cookie 列表: {path}"
+        )
+    if not all(isinstance(cookie, dict) for cookie in payload):
+        raise RuntimeError(f"账号 {unique_id} 的 cookie 列表格式错误: {path}")
+    return payload
+
+
+def _set_cookie_environment(tasks, cookie_value, cookies_path):
+    for task in tasks:
+        unique_id = str(task["unique_id"]).strip()
+        payload = _cookie_payload_for_task(cookie_value, unique_id, cookies_path)
+        os.environ[f"COOKIES_{unique_id}".upper()] = json.dumps(
+            payload, ensure_ascii=False
+        )
+
+
+def _set_default_environment():
+    # Production defaults are explicit but remain overridable through the
+    # service EnvironmentFile for one-off diagnostics or alternate paths.
+    defaults = {
+        "MESSAGE_AI_ENABLE": "0",
+        "HEADLESS": "1",
+        "BROWSER_TIMEOUT": "60000",
+        "CHAT_OPEN_TIMEOUT": "15000",
+        "TASK_RETRY_TIMES": "3",
+        "LOG_LEVEL": "INFO",
+        "REQUIRE_ALL_TARGETS": "1",
+        "DELIVERY_STATE_FILE": "/var/lib/huohua/delivery-state.json",
+    }
+    for key, value in defaults.items():
+        os.environ.setdefault(key, value)
+
+    executable = os.getenv("PLAYWRIGHT_EXECUTABLE_PATH", "").strip()
+    if executable:
+        return
+    # Use a system browser only when it exists. Otherwise Playwright's own
+    # installed browser path remains available instead of forcing a bad path.
+    for candidate in (
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+    ):
+        if Path(candidate).is_file():
+            os.environ["PLAYWRIGHT_EXECUTABLE_PATH"] = candidate
+            break
 
 
 def main():
     tasks_file = os.getenv("HUOHUA_TASKS_FILE", "/etc/huohua-tasks.json")
     cookies_file = os.getenv("HUOHUA_COOKIES_FILE", "/etc/huohua-cookies.json")
-    tasks_text = _read(tasks_file)
-    cookies_text = _read(cookies_file)
-    tasks = json.loads(tasks_text)
-    if not isinstance(tasks, list) or not tasks:
-        raise RuntimeError(f"任务文件为空或格式错误: {tasks_file}")
+    tasks_value = _read_json(tasks_file, "任务文件")
+    cookies_value = _read_json(cookies_file, "Cookie 文件")
+    tasks = _validate_tasks(tasks_value, tasks_file)
 
-    os.environ["TASKS"] = tasks_text
-    for task in tasks:
-        unique_id = task.get("unique_id") if isinstance(task, dict) else None
-        if unique_id:
-            os.environ[f"COOKIES_{unique_id}".upper()] = cookies_text
+    os.environ["TASKS"] = json.dumps(tasks, ensure_ascii=False)
+    _set_cookie_environment(tasks, cookies_value, cookies_file)
+    _set_default_environment()
+    os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
-    # Production defaults are intentionally explicit and can still be
-    # overridden by the wrapper when a one-off diagnostic is requested.
-    os.environ.setdefault("MESSAGE_AI_ENABLE", "0")
-    os.environ.setdefault("HEADLESS", "1")
-    os.environ.setdefault("PLAYWRIGHT_EXECUTABLE_PATH", "/usr/bin/chromium")
-    os.environ.setdefault("BROWSER_TIMEOUT", "60000")
-    os.environ.setdefault("CHAT_OPEN_TIMEOUT", "10000")
-    os.environ.setdefault("LOG_LEVEL", "INFO")
-    os.environ.setdefault("REQUIRE_ALL_TARGETS", "1")
-    os.environ.setdefault(
-        "DELIVERY_STATE_FILE", "/var/lib/huohua/delivery-state.json"
-    )
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(ROOT_DIR))
     import main as application
 
     application.main()

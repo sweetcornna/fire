@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Huohua spark delivery every day
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=5min
+Unit=huohua-production.service
+
+[Install]
+WantedBy=timers.target

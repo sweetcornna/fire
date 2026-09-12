@@ -48,6 +48,7 @@ DEFAULT_SEARCH_ACTION_TIMEOUT_MS = 5000
 DEFAULT_CHAT_OPEN_TIMEOUT_MS = 10000
 FALLBACK_ELEMENT_TIMEOUT_MS = 1500
 DEFAULT_TARGET_RETRY_TIMES = 3
+DEFAULT_SEARCH_RESULT_WAIT_SECONDS = 4
 CHAT_PAGE_URL = "https://www.douyin.com/chat"
 
 
@@ -540,8 +541,10 @@ def _load_delivery_state():
     except FileNotFoundError:
         return {}
     except (OSError, ValueError) as error:
-        logger.warning(f"续火状态文件读取失败，将按未发送处理: {path}: {error}")
-        return {}
+        # Treat a corrupt state file as a hard failure.  Silently treating it
+        # as empty would resend every target after a disk or deployment issue,
+        # which defeats the only durable duplicate-send protection we have.
+        raise RuntimeError(f"续火状态文件读取失败，请先修复或恢复该文件: {path}: {error}") from error
 
 
 def _today_delivery_state(state=None):
@@ -601,6 +604,60 @@ def _mark_target_sent_today(username, target):
         "sent_at": datetime.now(timezone.utc).isoformat(timespec="seconds")
     }
     _persist_delivery_state(state)
+
+
+def _send_message_to_target(page, account_name, target):
+    """Select, verify, and send one target's message.
+
+    A target is considered delivered only after the chat editor is confirmed
+    to belong to that target and the message submission completes.  Keeping
+    this unit small lets the caller retry one failed target without replaying
+    targets that already succeeded earlier in the same run.
+    """
+    selected_target = search_and_select_target(page, account_name, target)
+    if not selected_target:
+        raise RuntimeError(f"未找到目标好友 {target}")
+    if not wait_for_chat_editor(page, account_name, selected_target):
+        raise RuntimeError(f"目标好友 {target} 的聊天输入框未确认")
+
+    chat_input = page.locator(CHAT_EDITOR_FALLBACK_SELECTOR)
+    message = build_message()
+    lines = message.split("\\n")
+    for index, line in enumerate(lines):
+        chat_input.type(line)
+        if index < len(lines) - 1:
+            chat_input.press("Shift+Enter")
+
+    logger.debug(
+        f"账号 {account_name} 准备发送消息给好友 {selected_target}：\n\t{message}"
+    )
+    chat_input.press("Enter")
+    time.sleep(2)
+    _mark_target_sent_today(account_name, target)
+    logger.debug(f"账号 {account_name} 给好友 {selected_target} 发送消息完成")
+    return selected_target
+
+
+def _send_target_with_retries(page, account_name, target):
+    """Send one target with a fresh chat page between bounded attempts."""
+    retry_times = max(1, int(config.get("taskRetryTimes", DEFAULT_TARGET_RETRY_TIMES)))
+    for attempt in range(1, retry_times + 1):
+        try:
+            _dismiss_login_prompt(page, account_name)
+            return _send_message_to_target(page, account_name, target)
+        except Exception as error:
+            logger.warning(
+                f"账号 {account_name} 发送目标 {target} 第 {attempt}/{retry_times} 次失败: {error}"
+            )
+            if attempt >= retry_times:
+                break
+            try:
+                _open_chat_page_for_retry(page, account_name)
+            except Exception as reset_error:
+                logger.warning(
+                    f"账号 {account_name} 重置聊天页面失败，稍后继续重试目标 {target}: {reset_error}"
+                )
+    return None
 
 
 def _fallback_search_targets(page, username, remaining_targets):
@@ -773,6 +830,10 @@ def click_visible_text_result(page, username, target, terms):
 
 def search_and_select_target(page, username, target):
     terms = get_search_terms_for_target(target)
+    wait_seconds = max(
+        1,
+        int(os.getenv("CHAT_SEARCH_RESULT_WAIT_SECONDS", str(DEFAULT_SEARCH_RESULT_WAIT_SECONDS))),
+    )
     for term in terms:
         try:
             _dismiss_login_prompt(page, username)
@@ -782,13 +843,15 @@ def search_and_select_target(page, username, target):
                 return None
             logger.debug(f"账号 {username} 搜索目标好友 {target}，搜索词: {term}")
             fill_search_input(search_input, term)
-            time.sleep(config["friendListTimeout"] / 1000)
-            targetSymbol = click_matching_visible_user(page, username, [target])
-            if targetSymbol:
-                return targetSymbol
-            targetSymbol = click_visible_text_result(page, username, target, terms)
-            if targetSymbol:
-                return targetSymbol
+            deadline = time.monotonic() + wait_seconds
+            while time.monotonic() < deadline:
+                targetSymbol = click_matching_visible_user(page, username, [target])
+                if targetSymbol:
+                    return targetSymbol
+                targetSymbol = click_visible_text_result(page, username, target, terms)
+                if targetSymbol:
+                    return targetSymbol
+                time.sleep(0.5)
         except Exception:
             traceback.print_exc()
 
@@ -803,6 +866,7 @@ def _open_chat_page_for_retry(page, username):
         retries=max(1, int(config.get("taskRetryTimes", DEFAULT_TARGET_RETRY_TIMES))),
         delay=2,
         url=CHAT_PAGE_URL,
+        wait_until="domcontentloaded",
     )
     time.sleep(3)
     _dismiss_login_prompt(page, username)
@@ -824,13 +888,18 @@ def reliable_target_selections(page, username, targets):
     retry_times = max(
         1, int(config.get("taskRetryTimes", DEFAULT_TARGET_RETRY_TIMES))
     )
-    for target in targets:
+    for index, target in enumerate(targets):
         selected = None
         for attempt in range(1, retry_times + 1):
             try:
+                # Sending a message reorders Douyin's virtualized conversation
+                # list.  Rebuild the page before every target after the first
+                # so selection never depends on that mutable list state.
+                if index > 0 and attempt == 1:
+                    _open_chat_page_for_retry(page, username)
                 _dismiss_login_prompt(page, username)
                 selected = search_and_select_target(page, username, target)
-                if selected:
+                if selected and wait_for_chat_editor(page, username, selected):
                     break
             except Exception as error:
                 logger.warning(
@@ -1029,6 +1098,12 @@ def scroll_and_select_user(page, username, targets):
 
 def do_user_task(browser, username, cookies, targets):
     account_name = username
+    all_targets = list(
+        dict.fromkeys(_norm_value(target) for target in targets if _norm_value(target))
+    )
+    if not all_targets:
+        raise RuntimeError(f"账号 {account_name} 没有有效续火目标")
+
     context = browser.new_context()  # 每个任务使用独立的上下文
     context.set_default_navigation_timeout(
         config["browserTimeout"]
@@ -1104,6 +1179,7 @@ def do_user_task(browser, username, cookies, targets):
             retries=config["taskRetryTimes"],
             delay=5,
             url=CHAT_PAGE_URL,
+            wait_until="domcontentloaded",
         )
 
         time.sleep(5)
@@ -1115,7 +1191,6 @@ def do_user_task(browser, username, cookies, targets):
                 f"账号 {account_name} Cookie 已失效，抖音返回登录页；页面状态: {state}"
             )
 
-        all_targets = list(dict.fromkeys(_norm_value(target) for target in targets if _norm_value(target)))
         completed = _completed_targets_for_today(account_name, all_targets)
         pending_targets = [
             target for target in all_targets if _delivery_state_key(target) not in completed
@@ -1133,42 +1208,16 @@ def do_user_task(browser, username, cookies, targets):
         )
         sent_count = 0
         failed_targets = []
-        for selected_target in reliable_target_selections(
-            page, account_name, pending_targets
-        ):
-            logger.debug(
-                f"账号 {account_name} 已选中好友 {selected_target} 发送消息"
-            )
-            if not wait_for_chat_editor(page, account_name, selected_target):
-                failed_targets.append(selected_target)
-                continue
-            chat_input = page.locator(CHAT_EDITOR_FALLBACK_SELECTOR)
-
-            message = build_message()
-            lines = message.split("\\n")
-            for index, line in enumerate(lines):
-                chat_input.type(line)
-                if index < len(lines) - 1:
-                    chat_input.press("Shift+Enter")
-
-            logger.debug(
-                f"账号 {account_name} 准备发送消息给好友 {selected_target}：\n\t{message}"
-            )
-            chat_input.press("Enter")
-            time.sleep(2)
-            _mark_target_sent_today(account_name, selected_target)
-            logger.debug(
-                f"账号 {account_name} 给好友 {selected_target} 发送消息完成"
-            )
-            sent_count += 1
+        for target in pending_targets:
+            if _send_target_with_retries(page, account_name, target):
+                sent_count += 1
+            else:
+                failed_targets.append(target)
 
         completed_count = len(all_targets) - len(pending_targets) + sent_count
         missing_count = len(all_targets) - completed_count
         if missing_count:
-            if failed_targets:
-                logger.warning(
-                    f"账号 {account_name} 本次有目标未确认聊天输入框: {failed_targets}"
-                )
+            logger.warning(f"账号 {account_name} 本次有目标未完成: {failed_targets}")
             raise RuntimeError(
                 f"账号 {account_name} 未完成全部发送: {completed_count}/{len(all_targets)}；"
                 "本次任务标记为失败，下一次运行将从未完成目标继续"
@@ -1181,6 +1230,9 @@ def do_user_task(browser, username, cookies, targets):
 
 
 def runTasks():
+    if not userData:
+        raise RuntimeError("没有加载到任何有效账号，拒绝将空任务标记为成功")
+
     playwright, browser = get_browser()
     try:
         # 检查是否启用多任务和任务数量

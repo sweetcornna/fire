@@ -3,9 +3,12 @@ on:
   workflow_dispatch: # 允许手动触发
   schedule: # 定时任务
     - cron: "0 1 * * *" # 每天 1:00 UTC（对应北京时间 9:00）
+concurrency:
+  group: douyin-spark-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   run-main:
-    timeout-minutes: 20
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     environment: user-data
     steps:
@@ -29,6 +32,8 @@ jobs:
         SECRETS_JSON: ${{ toJson(secrets) }}
       run: python utils/export_github_env.py
     - name: Run DouYin Spark Flow
+      env:
+        REQUIRE_ALL_TARGETS: "1"
       run: python main.py
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}

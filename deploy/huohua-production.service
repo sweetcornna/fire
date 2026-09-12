@@ -1,0 +1,13 @@
+[Unit]
+Description=Huohua production spark delivery
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=huohua
+Group=huohua
+WorkingDirectory=/opt/huohua/fire
+EnvironmentFile=-/etc/huohua/production.env
+ExecStart=/opt/huohua/fire/deploy/run-production.sh
+TimeoutStartSec=60min
