@@ -94,7 +94,7 @@ def _set_default_environment():
         "MESSAGE_AI_ENABLE": "0",
         "HEADLESS": "1",
         "BROWSER_TIMEOUT": "60000",
-        "CHAT_OPEN_TIMEOUT": "5000",
+        "CHAT_OPEN_TIMEOUT": "2000",
         "TASK_RETRY_TIMES": "1",
         "CHAT_SEARCH_RESULT_WAIT_SECONDS": "2",
         "LOG_LEVEL": "INFO",
