@@ -1209,8 +1209,18 @@ def do_user_task(browser, username, cookies, targets):
         sent_count = 0
         failed_targets = []
         message = build_message()
+        reset_before_next = False
         for target in pending_targets:
-            if _send_target_with_retries(page, account_name, target, message):
+            if reset_before_next:
+                try:
+                    _open_chat_page_for_retry(page, account_name)
+                except Exception as error:
+                    logger.warning(
+                        f"账号 {account_name} 重置聊天页面失败，继续尝试目标 {target}: {error}"
+                    )
+            delivered = _send_target_with_retries(page, account_name, target, message)
+            reset_before_next = not delivered
+            if delivered:
                 sent_count += 1
             else:
                 failed_targets.append(target)

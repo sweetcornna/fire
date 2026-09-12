@@ -52,7 +52,7 @@ jobs:
         PREVIEW_ONLY: ${{ inputs.preview_only || 'false' }}
         AI_PREVIEW_COUNT: ${{ inputs.preview_count || '5' }}
         BROWSER_TIMEOUT: "30000"
-        CHAT_OPEN_TIMEOUT: "15000"
+        CHAT_OPEN_TIMEOUT: "5000"
         TASK_RETRY_TIMES: "1"
         CHAT_SEARCH_RESULT_WAIT_SECONDS: "2"
         HEADLESS: "1"
