@@ -298,12 +298,29 @@ def handle_response(response: Response):
             json_data = response.json()
             # print("\n📦 响应 JSON 数据：")
             # print(json.dumps(json_data, indent=4, ensure_ascii=False))
-            for item in json_data.get("data", []):
+            items = json_data.get("data") or json_data.get("user_list") or []
+            if isinstance(items, dict):
+                items = items.get("user_list") or items.get("users") or items.get("list") or []
+            if isinstance(items, dict):
+                items = [items]
+            if not isinstance(items, list):
+                items = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                user = item.get("user") if isinstance(item.get("user"), dict) else item
                 short_id = _norm_value(item.get("short_id"))
                 unique_id = _norm_value(item.get("unique_id"))
                 sec_uid = _norm_value(item.get("sec_uid", ""))
                 nickname = _norm_value(item.get("nickname"))
                 remark_name = _norm_value(item.get("remark_name", nickname))
+                short_id = short_id or _norm_value(user.get("short_id") or user.get("shortId"))
+                unique_id = unique_id or _norm_value(
+                    user.get("unique_id") or user.get("uniqueId") or item.get("user_id")
+                )
+                sec_uid = sec_uid or _norm_value(user.get("sec_uid"))
+                nickname = nickname or _norm_value(user.get("nickname"))
+                remark_name = remark_name or _norm_value(user.get("remark_name", nickname))
                 values = [short_id, unique_id, sec_uid, nickname, remark_name]
                 if config.get("debugUserIDMapping"):
                     logger.debug(
