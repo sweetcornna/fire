@@ -614,7 +614,12 @@ def _send_message_to_target(page, account_name, target, message=None):
     this unit small lets the caller retry one failed target without replaying
     targets that already succeeded earlier in the same run.
     """
-    selected_target = search_and_select_target(page, account_name, target)
+    # Prefer the already-loaded conversation list.  Searching globally can
+    # return a text-only result that does not open a chat (and therefore has
+    # no editor), while the conversation item is the reliable send path.
+    selected_target = click_matching_visible_user(page, account_name, [target])
+    if not selected_target:
+        selected_target = search_and_select_target(page, account_name, target)
     if not selected_target:
         raise RuntimeError(f"未找到目标好友 {target}")
     if not wait_for_chat_editor(page, account_name, selected_target):
@@ -848,9 +853,19 @@ def search_and_select_target(page, username, target):
                 targetSymbol = click_matching_visible_user(page, username, [target])
                 if targetSymbol:
                     return targetSymbol
-                targetSymbol = click_visible_text_result(page, username, target, terms)
-                if targetSymbol:
-                    return targetSymbol
+                # A global user-search result is not necessarily an existing
+                # conversation and often opens a profile without an editor.
+                # Keep it opt-in so production never treats a text-only hit as
+                # a sendable chat by accident.
+                if os.getenv("ALLOW_GLOBAL_USER_SEARCH", "0").strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }:
+                    targetSymbol = click_visible_text_result(page, username, target, terms)
+                    if targetSymbol:
+                        return targetSymbol
                 time.sleep(0.5)
         except Exception:
             traceback.print_exc()
