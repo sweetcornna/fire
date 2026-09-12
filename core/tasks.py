@@ -455,6 +455,11 @@ def _page_state(page):
         return {"url": "", "title": "", "body": ""}
 
 
+def _logged_out(page):
+    body = _page_state(page).get("body", "")
+    return any(marker in body for marker in ("扫码登录", "密码登录", "登录后免费畅享"))
+
+
 def _fallback_search_targets(page, username, remaining_targets):
     """Use the page search UI when the virtualized list container is unavailable."""
     if not remaining_targets:
@@ -860,6 +865,12 @@ def do_user_task(browser, username, cookies, targets):
     )
 
     time.sleep(5)  # 等待5秒让过可能存在的弹窗
+
+    if _logged_out(page):
+        state = _page_state(page)
+        raise RuntimeError(
+            f"账号 {account_name} Cookie 已失效，抖音返回登录页；页面状态: {state}"
+        )
 
     logger.debug(f"账号 {username} 开始发送消息")
     # 滚动并选择用户
