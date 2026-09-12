@@ -28,9 +28,17 @@ CONVERSATION_LIST_SELECTOR = ".conversationConversationListwrapper"
 # Keep the legacy selector as the public/tested constant while using the
 # current contenteditable marker as a fallback on the live page.
 CHAT_EDITOR_SELECTOR = ".messageEditorimChatEditorContainer"
-CHAT_EDITOR_FALLBACK_SELECTOR = (
-    '[contenteditable="true"][data-placeholder="发送消息"], '
-    + CHAT_EDITOR_SELECTOR
+# Douyin has used several editor wrappers over time.  Match the semantic
+# "发送消息" marker first, then keep the legacy class for older revisions.
+CHAT_EDITOR_FALLBACK_SELECTOR = ", ".join(
+    (
+        '[contenteditable="true"][data-placeholder*="发送消息"]',
+        '[contenteditable="true"][aria-label*="发送消息"]',
+        '[contenteditable="true"][placeholder*="发送消息"]',
+        '[role="textbox"][contenteditable="true"]',
+        'textarea[placeholder*="发送消息"]',
+        CHAT_EDITOR_SELECTOR,
+    )
 )
 SEARCH_INPUT_SELECTORS = (
     'input[placeholder*="搜索"]',
@@ -49,6 +57,7 @@ DEFAULT_CHAT_OPEN_TIMEOUT_MS = 10000
 FALLBACK_ELEMENT_TIMEOUT_MS = 1500
 DEFAULT_TARGET_RETRY_TIMES = 3
 DEFAULT_SEARCH_RESULT_WAIT_SECONDS = 4
+DEFAULT_CHAT_READY_TIMEOUT_MS = 30000
 CHAT_PAGE_URL = "https://www.douyin.com/chat"
 
 
@@ -491,6 +500,40 @@ def _logged_out(page):
     return any(marker in body for marker in ("扫码登录", "密码登录", "登录后免费畅享"))
 
 
+def wait_for_chat_ready(page, username, timeout=None):
+    """Wait for the authenticated chat shell before searching or sending.
+
+    Douyin's chat bundle can take several seconds to hydrate on the fixed
+    production host.  A single fixed sleep caused valid sessions to be
+    rejected before the search input existed.  Poll for either the search box
+    or a rendered conversation list, while failing quickly on a login page.
+    """
+    timeout = timeout or int(
+        os.getenv("CHAT_READY_TIMEOUT", str(DEFAULT_CHAT_READY_TIMEOUT_MS))
+    )
+    deadline = time.monotonic() + max(1000, timeout) / 1000
+    while time.monotonic() < deadline:
+        _dismiss_login_prompt(page, username)
+        if _logged_out(page):
+            state = _page_state(page)
+            raise RuntimeError(
+                f"账号 {username} Cookie 已失效，抖音返回登录页；页面状态: {state}"
+            )
+        try:
+            if find_search_input(page):
+                return True
+            if page.locator(CONVERSATION_ITEM_SELECTOR).count() > 0:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+
+    logger.warning(
+        f"账号 {username} 聊天页面在 {timeout}ms 内未就绪；页面状态: {_page_state(page)}"
+    )
+    return False
+
+
 def _dismiss_login_prompt(page, username):
     """Dismiss Douyin's optional "save login" prompt when it blocks the chat UI."""
     state = _page_state(page)
@@ -602,6 +645,32 @@ def _persist_delivery_state(state):
                 os.unlink(temp_name)
     except OSError as error:
         raise RuntimeError(f"续火状态文件写入失败: {path}: {error}") from error
+
+
+def _persist_cookie_snapshot(cookies):
+    """Persist refreshed browser cookies without ever truncating the live file."""
+    value = os.getenv("HUOHUA_COOKIE_PERSIST_FILE", "").strip()
+    if not value or not cookies:
+        return
+    path = Path(value).expanduser()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(cookies, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temp_name, 0o600)
+            os.replace(temp_name, path)
+        finally:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)
+    except OSError as error:
+        raise RuntimeError(f"Cookie 刷新文件写入失败: {path}: {error}") from error
 
 
 def _completed_targets_for_today(username, targets):
@@ -863,10 +932,18 @@ def search_and_select_target(page, username, target):
     for term in terms:
         try:
             _dismiss_login_prompt(page, username)
-            search_input = find_search_input(page)
+            search_input = None
+            input_deadline = time.monotonic() + wait_seconds
+            while time.monotonic() < input_deadline:
+                search_input = find_search_input(page)
+                if search_input:
+                    break
+                if _logged_out(page):
+                    return None
+                time.sleep(0.5)
             if not search_input:
                 logger.warning(f"账号 {username} 未找到聊天搜索框，无法搜索目标好友 {target}")
-                return None
+                continue
             logger.debug(f"账号 {username} 搜索目标好友 {target}，搜索词: {term}")
             fill_search_input(search_input, term)
             deadline = time.monotonic() + wait_seconds
@@ -905,12 +982,8 @@ def _open_chat_page_for_retry(page, username):
         wait_until="commit",
     )
     time.sleep(3)
-    _dismiss_login_prompt(page, username)
-    if _logged_out(page):
-        state = _page_state(page)
-        raise RuntimeError(
-            f"账号 {username} Cookie 已失效，抖音返回登录页；页面状态: {state}"
-        )
+    if not wait_for_chat_ready(page, username):
+        raise RuntimeError(f"账号 {username} 聊天页面未就绪")
 
 
 def reliable_target_selections(page, username, targets):
@@ -1141,6 +1214,7 @@ def do_user_task(browser, username, cookies, targets):
         raise RuntimeError(f"账号 {account_name} 没有有效续火目标")
 
     context = browser.new_context()  # 每个任务使用独立的上下文
+    session_authenticated = False
     context.set_default_navigation_timeout(
         config["browserTimeout"]
     )  # 设置导航超时时间为 120 秒
@@ -1218,14 +1292,9 @@ def do_user_task(browser, username, cookies, targets):
             wait_until="commit",
         )
 
-        time.sleep(5)
-        _dismiss_login_prompt(page, account_name)
-
-        if _logged_out(page):
-            state = _page_state(page)
-            raise RuntimeError(
-                f"账号 {account_name} Cookie 已失效，抖音返回登录页；页面状态: {state}"
-            )
+        if not wait_for_chat_ready(page, account_name):
+            raise RuntimeError(f"账号 {account_name} 聊天页面未就绪")
+        session_authenticated = True
 
         completed = _completed_targets_for_today(account_name, all_targets)
         pending_targets = [
@@ -1273,7 +1342,11 @@ def do_user_task(browser, username, cookies, targets):
             f"账号 {account_name} 本次发送完成: {completed_count}/{len(all_targets)} 个目标"
         )
     finally:
-        context.close()
+        try:
+            if session_authenticated:
+                _persist_cookie_snapshot(context.cookies())
+        finally:
+            context.close()
 
 
 def runTasks():

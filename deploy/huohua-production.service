@@ -10,4 +10,4 @@ Group=huohua
 WorkingDirectory=/opt/huohua/fire
 EnvironmentFile=-/etc/huohua/production.env
 ExecStart=/opt/huohua/fire/deploy/run-production.sh
-TimeoutStartSec=60min
+TimeoutStartSec=90min

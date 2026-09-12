@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   run-main:
-    timeout-minutes: 45
+    timeout-minutes: 90
     runs-on: ubuntu-latest
     environment: user-data
     steps:
@@ -61,10 +61,11 @@ jobs:
         COOKIES_33217367887: ${{ secrets.COOKIES_33217367887 }}
         PREVIEW_ONLY: ${{ inputs.preview_only || 'false' }}
         AI_PREVIEW_COUNT: ${{ inputs.preview_count || '5' }}
-        BROWSER_TIMEOUT: "30000"
-        CHAT_OPEN_TIMEOUT: "2000"
-        TASK_RETRY_TIMES: "1"
-        CHAT_SEARCH_RESULT_WAIT_SECONDS: "2"
+        BROWSER_TIMEOUT: "60000"
+        CHAT_OPEN_TIMEOUT: "15000"
+        CHAT_READY_TIMEOUT: "30000"
+        TASK_RETRY_TIMES: "3"
+        CHAT_SEARCH_RESULT_WAIT_SECONDS: "6"
         ALLOW_GLOBAL_USER_SEARCH: "1"
         HEADLESS: "1"
         DELIVERY_STATE_FILE: .state/delivery-state.json

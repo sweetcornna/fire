@@ -200,7 +200,10 @@ class _Page:
         return None
 
     def wait_for_selector(self, selector, timeout=None):
-        if selector == tasks.CHAT_EDITOR_SELECTOR and not self.chat_editor_available:
+        if (
+            tasks.CHAT_EDITOR_SELECTOR in selector
+            and not self.chat_editor_available
+        ):
             raise RuntimeError("chat editor unavailable")
         return True
 

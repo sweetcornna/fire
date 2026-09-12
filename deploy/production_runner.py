@@ -129,6 +129,7 @@ def main():
 
     os.environ["TASKS"] = json.dumps(tasks, ensure_ascii=False)
     _set_cookie_environment(tasks, cookies_value, cookies_file)
+    os.environ.setdefault("HUOHUA_COOKIE_PERSIST_FILE", cookies_file)
     _set_default_environment()
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
