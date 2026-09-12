@@ -81,6 +81,10 @@
 - 还可选配 `MESSAGE_AI_PERSONAS`（JSON 数组）自定义聊天语气；不配则用内置的 5 种自然语气逐日轮换。
 - 可在 Actions 中手动运行 dev 工作流，并将 `preview_only` 设为 `true`。程序会生成 1—10 条真实 AI 文案写入日志，但不会登录抖音或发送；外部每日定时触发默认仍会真实发送。
 
+生产服务器若使用外部 cron 触发 dev 工作流，请直接部署仓库内的
+`deploy/trigger_huohua.sh`。脚本固定调用当前仓库 `sweetcornna/fire` 的 `dev`
+分支，并等待工作流完成后检查结果；旧的 `ymylive/fire` / `main` 配置会返回 307，不能继续使用。
+
 ## 5. 修改执行时间（可选）
 
 如需调整自动执行时间，编辑仓库文件 `.github/workflows/schedule.yml`，找到下方配置：
