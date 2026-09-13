@@ -2,6 +2,16 @@
 # Dispatch the production workflow once a day from the server cron.
 set -Eeuo pipefail
 
+DRY_RUN=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=1
+  shift
+fi
+if (( $# > 0 )); then
+  echo "usage: $0 [--dry-run]" >&2
+  exit 64
+fi
+
 TOKEN_FILE="${HUOHUA_GITHUB_TOKEN_FILE:-/root/.fire_gh_token}"
 LOG_FILE="${HUOHUA_TRIGGER_LOG:-/root/fire_trigger.log}"
 LOCK_FILE="${HUOHUA_TRIGGER_LOCK:-/var/lock/fire-trigger.lock}"
@@ -63,6 +73,11 @@ dispatch_epoch="$(date +%s)"
 endpoint="https://api.github.com/repos/${REPOSITORY}/actions/workflows/${WORKFLOW}/dispatches"
 
 payload="$(jq -nc --arg ref "$REF" '{ref: $ref}')"
+if (( DRY_RUN )); then
+  echo "dry-run repository=$REPOSITORY workflow=$WORKFLOW ref=$REF"
+  exit 0
+fi
+
 dispatch_ok=0
 for dispatch_attempt in $(seq 1 "$DISPATCH_ATTEMPTS"); do
   : >"$response_file"
