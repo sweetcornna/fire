@@ -3,13 +3,19 @@ on:
   workflow_dispatch: # 允许手动触发
   schedule: # 定时任务
     - cron: "0 1 * * *" # 每天 1:00 UTC（对应北京时间 9:00）
+concurrency:
+  # Native schedule and the external schedule_dev dispatcher share one lock.
+  group: douyin-spark-dev
+  cancel-in-progress: false
 jobs:
   run-main:
-    timeout-minutes: 20
+    timeout-minutes: 90
     runs-on: ubuntu-latest
     environment: user-data
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: dev
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
@@ -28,8 +34,36 @@ jobs:
         VARS_JSON: ${{ toJson(vars) }}
         SECRETS_JSON: ${{ toJson(secrets) }}
       run: python utils/export_github_env.py
+    - name: Restore daily delivery state
+      id: delivery-date
+      run: |
+        mkdir -p .state
+        echo "today=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v4
+      id: delivery-cache
+      with:
+        path: .state/delivery-state.json
+        key: huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}-
+          huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}
     - name: Run DouYin Spark Flow
+      env:
+        BROWSER_TIMEOUT: "60000"
+        CHAT_OPEN_TIMEOUT: "15000"
+        CHAT_READY_TIMEOUT: "30000"
+        TASK_RETRY_TIMES: "3"
+        CHAT_SEARCH_RESULT_WAIT_SECONDS: "6"
+        ALLOW_GLOBAL_USER_SEARCH: "1"
+        HEADLESS: "1"
+        REQUIRE_ALL_TARGETS: "1"
+        DELIVERY_STATE_FILE: .state/delivery-state.json
       run: python main.py
+    - uses: actions/cache/save@v4
+      if: ${{ always() && !cancelled() }}
+      with:
+        path: .state/delivery-state.json
+        key: huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}-${{ github.run_id }}-${{ github.run_attempt }}
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}
       with:
