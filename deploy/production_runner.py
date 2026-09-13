@@ -115,6 +115,7 @@ def _set_default_environment():
         "HEADLESS": "1",
         "BROWSER_TIMEOUT": "60000",
         "CHAT_OPEN_TIMEOUT": "2000",
+        "CHAT_SEND_ACTION_TIMEOUT": "10000",
         "TASK_RETRY_TIMES": "1",
         "CHAT_SEARCH_RESULT_WAIT_SECONDS": "2",
         "ALLOW_GLOBAL_USER_SEARCH": "1",

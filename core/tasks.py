@@ -30,9 +30,9 @@ CONVERSATION_LIST_SELECTOR = ".conversationConversationListwrapper"
 CHAT_EDITOR_SELECTOR = ".messageEditorimChatEditorContainer"
 # Strict editable input selector for typing actions (must not include outer container)
 CHAT_INPUT_SELECTOR_PARTS = (
-    '[contenteditable="true"][data-placeholder*="发送消息"]',
-    '[contenteditable="true"][aria-label*="发送消息"]',
-    '[contenteditable="true"][placeholder*="发送消息"]',
+    '[contenteditable="true"][data-placeholder="发送消息"]',
+    '[contenteditable="true"][aria-label="发送消息"]',
+    '[contenteditable="true"][placeholder="发送消息"]',
     '[role="textbox"][contenteditable="true"]',
     'div.zone-container[contenteditable="true"]',
     'div.messageEditorinputArea[contenteditable="true"]',
@@ -42,7 +42,9 @@ CHAT_INPUT_SELECTOR_PARTS = (
 CHAT_INPUT_SELECTOR = ", ".join(CHAT_INPUT_SELECTOR_PARTS)
 # Douyin has used several editor wrappers over time. Match the semantic
 # "发送消息" marker first, then keep the legacy class for older revisions.
-CHAT_EDITOR_FALLBACK_SELECTOR = f"{CHAT_INPUT_SELECTOR}, {CHAT_EDITOR_SELECTOR}"
+CHAT_EDITOR_FALLBACK_SELECTOR = (
+    f"{CHAT_INPUT_SELECTOR_PARTS[0]}, {CHAT_EDITOR_SELECTOR}"
+)
 SEARCH_INPUT_SELECTORS = (
     'input[placeholder*="搜索"]',
     'input[aria-label*="搜索"]',
@@ -818,8 +820,41 @@ def _wait_for_chat_input(page, timeout=FALLBACK_ELEMENT_TIMEOUT_MS):
 
 def _find_chat_input(page):
     """Find an editable message target, with a legacy wrapper fallback."""
+    # The exact data-placeholder selector is the path verified by the last
+    # successful production run.  Prefer it before marker-free contenteditables
+    # so a search/result textbox cannot receive the message.
+    preferred = []
+    for selector_index, selector in enumerate(CHAT_INPUT_SELECTOR_PARTS[:3]):
+        try:
+            locator = page.locator(selector)
+            count = locator.count()
+        except Exception:
+            continue
+        for index in range(count):
+            try:
+                candidate = locator.nth(index)
+                if not candidate.is_visible() or _chat_input_is_search_like(candidate):
+                    continue
+                preferred.append((selector_index, index, candidate))
+            except Exception:
+                continue
+
+    if preferred:
+        return min(preferred, key=lambda item: item[:2])[2]
+
+    # The wrapper was the reliable fallback in older Douyin builds and is safer
+    # than selecting an arbitrary marker-free contenteditable.
+    try:
+        wrapper_locator = page.locator(CHAT_EDITOR_SELECTOR)
+        for index in range(wrapper_locator.count()):
+            wrapper = wrapper_locator.nth(index)
+            if wrapper.is_visible():
+                return wrapper
+    except Exception:
+        pass
+
     candidates = []
-    for selector_index, selector in enumerate(CHAT_INPUT_SELECTOR_PARTS):
+    for selector_index, selector in enumerate(CHAT_INPUT_SELECTOR_PARTS[3:], start=3):
         try:
             locator = page.locator(selector)
             count = locator.count()
@@ -840,20 +875,8 @@ def _find_chat_input(page):
                 )
             except Exception:
                 continue
-
     if candidates:
         return min(candidates, key=lambda item: item[:3])[3]
-
-    # Older Douyin builds made the wrapper itself editable and did not expose
-    # a semantic placeholder.  Use it only after all strict candidates fail.
-    try:
-        wrapper_locator = page.locator(CHAT_EDITOR_SELECTOR)
-        for index in range(wrapper_locator.count()):
-            wrapper = wrapper_locator.nth(index)
-            if wrapper.is_visible():
-                return wrapper
-    except Exception:
-        pass
     return None
 
 
@@ -872,7 +895,10 @@ def _submit_chat_message(page, account_name, target, message=None, delivery_key=
     logger.debug(
         f"账号 {account_name} 准备发送消息给好友 {target}：\n\t{message}"
     )
-    chat_input.press("Enter")
+    send_timeout = max(
+        1000, int(config.get("chatSendActionTimeout", 10000))
+    )
+    _locator_action(chat_input, "press", "Enter", timeout=send_timeout)
     time.sleep(2)
     _mark_target_sent_today(delivery_key or account_name, target)
     logger.debug(f"账号 {account_name} 给好友 {target} 发送消息完成")
@@ -892,7 +918,12 @@ def _send_message_to_target(
     # Prefer the already-loaded conversation list.  Searching globally can
     # return a text-only result that does not open a chat (and therefore has
     # no editor), while the conversation item is the reliable send path.
-    selected_target = click_matching_visible_user(page, account_name, [target])
+    selected_target = None
+    current_match, _ = _chat_target_match(page, target)
+    if current_match:
+        selected_target = target
+    if not selected_target:
+        selected_target = click_matching_visible_user(page, account_name, [target])
     if not selected_target:
         selected_target = search_and_select_target(page, account_name, target)
     if not selected_target:
@@ -1506,15 +1537,7 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
         sent_count = 0
         failed_targets = []
         message = build_message()
-        reset_before_next = False
-        for target in pending_targets:
-            if reset_before_next:
-                try:
-                    _open_chat_page_for_retry(page, account_name)
-                except Exception as error:
-                    logger.warning(
-                        f"账号 {account_name} 重置聊天页面失败，继续尝试目标 {target}: {error}"
-                    )
+        for target in scroll_and_select_user(page, account_name, pending_targets):
             delivered = _send_target_with_retries(
                 page,
                 account_name,
@@ -1522,7 +1545,6 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
                 message,
                 delivery_account_key,
             )
-            reset_before_next = not delivered
             if delivered:
                 sent_count += 1
             else:
