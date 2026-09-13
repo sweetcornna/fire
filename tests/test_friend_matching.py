@@ -1,4 +1,8 @@
+import json
+import os
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import core.tasks as tasks
 
@@ -53,6 +57,38 @@ class _TextLocator:
 
     def nth(self, index):
         return self.page.text_results[self.text][index]
+
+
+class _EditableInput:
+    def __init__(self, placeholder="发送消息"):
+        self.placeholder = placeholder
+        self.typed = []
+        self.pressed = []
+
+    def get_attribute(self, name):
+        if name in {"placeholder", "data-placeholder"}:
+            return self.placeholder
+        return ""
+
+    def is_visible(self):
+        return True
+
+    def type(self, value, *args, **kwargs):
+        self.typed.append(value)
+
+    def press(self, key, *args, **kwargs):
+        self.pressed.append(key)
+
+
+class _SelectorLocator:
+    def __init__(self, values):
+        self.values = values
+
+    def count(self):
+        return len(self.values)
+
+    def nth(self, index):
+        return self.values[index]
 
 
 class _Locator:
@@ -418,6 +454,95 @@ class FriendMatchingTests(unittest.TestCase):
 
         self.assertEqual(selected, "1369556832")
         self.assertEqual(page.clicked_text_results, ["黑眼圈"])
+
+    def test_handle_response_indexes_numeric_ids_for_unhydrated_titles(self):
+        class MockResponse:
+            url = "https://www.douyin.com/aweme/v1/web/im/user/info"
+            status = 200
+
+            def json(self):
+                return {
+                    "data": [
+                        {
+                            "short_id": "64261848150",
+                            "unique_id": "1001007018940899",
+                            "sec_uid": "MS4wLjABAAAA...",
+                            "nickname": "测试好友昵称",
+                            "remark_name": "测试备注",
+                        }
+                    ]
+                }
+
+        tasks.handle_response(MockResponse())
+        self.assertIn("64261848150", tasks.userIDDict)
+        self.assertIn("1001007018940899", tasks.userIDDict)
+        self.assertIn("测试好友昵称", tasks.userIDDict)
+        self.assertIn("测试备注", tasks.userIDDict)
+        self.assertEqual(
+            tasks.checkTargetName("64261848150", ["测试备注"]),
+            "测试备注",
+        )
+        self.assertEqual(
+            tasks.checkTargetName("1001007018940899", ["测试好友昵称"]),
+            "测试好友昵称",
+        )
+
+    def test_handle_response_accepts_a_single_user_object(self):
+        class MockResponse:
+            url = "https://www.douyin.com/aweme/v1/web/im/user/info"
+            status = 200
+
+            def json(self):
+                return {
+                    "data": {
+                        "user": {
+                            "short_id": "7788",
+                            "unique_id": "single-user",
+                            "nickname": "单个好友",
+                        }
+                    }
+                }
+
+        tasks.handle_response(MockResponse())
+        self.assertEqual(tasks.checkTargetName("单个好友", ["single-user"]), "single-user")
+
+    def test_corrupt_delivery_state_is_not_treated_as_empty(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {"DELIVERY_STATE_FILE": os.path.join(directory, "state.json")},
+            clear=False,
+        ):
+            with open(os.path.join(directory, "state.json"), "w", encoding="utf-8") as handle:
+                json.dump([], handle)
+            with self.assertRaisesRegex(RuntimeError, "顶层必须是对象"):
+                tasks._load_delivery_state()
+
+    def test_submit_uses_editable_input_and_stable_delivery_key(self):
+        editable = _EditableInput()
+
+        class Page:
+            def locator(self, selector):
+                if selector == tasks.CHAT_INPUT_SELECTOR_PARTS[0]:
+                    return _SelectorLocator([editable])
+                return _SelectorLocator([])
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {"DELIVERY_STATE_FILE": os.path.join(directory, "state.json")},
+            clear=False,
+        ), patch.object(tasks, "build_message", return_value="甲\\n乙"):
+            result = tasks._submit_chat_message(
+                Page(), "显示名", "好友", delivery_key="stable-account-id"
+            )
+            with open(
+                os.path.join(directory, "state.json"), encoding="utf-8"
+            ) as handle:
+                state = json.load(handle)
+
+        self.assertEqual(result, "好友")
+        self.assertEqual(editable.typed, ["甲", "乙"])
+        self.assertEqual(editable.pressed, ["Shift+Enter", "Enter"])
+        self.assertIn("stable-account-id", state["days"][tasks.date.today().isoformat()])
 
 
 if __name__ == "__main__":

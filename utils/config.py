@@ -143,12 +143,19 @@ def get_userData():
     tasks = json.loads(os.getenv("TASKS", "[]"))
 
     userData = []
+    skipped = []
+    strict_loading = _env_bool("REQUIRE_ALL_TARGETS")
 
-    for task in tasks:
+    for index, task in enumerate(tasks, start=1):
+        if not isinstance(task, dict):
+            skipped.append(f"第 {index} 项不是对象")
+            continue
         username = task.get("username", "未知用户")
-        unique_id = task.get("unique_id")
+        unique_id = str(task.get("unique_id") or "").strip()
         if not unique_id:
-            logger.warning(f"{username} 的任务  缺少 unique_id 字段，已跳过")
+            message = f"{username} 的任务缺少 unique_id 字段"
+            logger.warning(f"{message}，已跳过")
+            skipped.append(message)
             continue
         cookies_key = f"cookies_{unique_id}".upper()
         raw_cookies = os.getenv(cookies_key, "")
@@ -162,16 +169,41 @@ def get_userData():
             cookies_str = raw_cookies.encode("utf-8").decode("unicode_escape")
             cookies = None
         if not cookies_str:
-            logger.warning(f"{username} 的任务 缺少 {cookies_key} 环境变量，已跳过")
+            message = f"{username} 的任务缺少 {cookies_key} 环境变量"
+            logger.warning(f"{message}，已跳过")
+            skipped.append(message)
             continue
         if cookies is None:
             try:
                 cookies = json.loads(cookies_str)
             except json.JSONDecodeError:
-                logger.warning(f"{username} 的任务 {cookies_key} 格式不正确，已跳过")
+                message = f"{username} 的任务 {cookies_key} 格式不正确"
+                logger.warning(f"{message}，已跳过")
+                skipped.append(message)
                 continue
-        if not isinstance(cookies, list):
-            logger.warning(f"{username} 的任务 {cookies_key} 格式不正确，已跳过")
+        if not isinstance(cookies, list) or not cookies:
+            message = f"{username} 的任务 {cookies_key} 格式不正确或为空"
+            logger.warning(f"{message}，已跳过")
+            skipped.append(message)
+            continue
+
+        raw_targets = task.get("targets", [])
+        if not isinstance(raw_targets, list):
+            message = f"{username} 的任务 targets 格式不正确"
+            logger.warning(f"{message}，已跳过")
+            skipped.append(message)
+            continue
+        targets = [
+            norm(str(target))
+            for target in raw_targets
+            if target is not None
+            and not isinstance(target, (dict, list, tuple, set))
+            and str(target).strip()
+        ]
+        if not targets:
+            message = f"{username} 的任务没有有效续火目标"
+            logger.warning(f"{message}，已跳过")
+            skipped.append(message)
             continue
 
         userData.append(
@@ -179,8 +211,14 @@ def get_userData():
                 "unique_id": unique_id,
                 "username": username,
                 "cookies": sanitize_cookies(cookies),
-                "targets": [norm(t) for t in task.get("targets", [])], # 标准化目标列表
+                "targets": targets,  # 标准化目标列表
             }
+        )
+
+    if strict_loading and skipped:
+        userData = []
+        raise RuntimeError(
+            "配置中存在未加载账号，拒绝只执行部分续火任务: " + "；".join(skipped)
         )
 
     return userData

@@ -5,7 +5,9 @@ BASE_DIR="${HUOHUA_BASE_DIR:-/opt/huohua/fire}"
 PYTHON_BIN="${HUOHUA_PYTHON_BIN:-/opt/huohua/venv/bin/python}"
 LOCK_FILE="${HUOHUA_LOCK_FILE:-/var/lib/huohua/production.lock}"
 STATUS_FILE="${HUOHUA_STATUS_FILE:-/var/lib/huohua/last-run.status}"
-LOG_FILE="${HUOHUA_RUN_LOG:-/var/log/huohua-run.log}"
+# /var/log is root-owned on the systemd host; keep the default log beside the
+# writable production state so the dedicated huohua user can start the job.
+LOG_FILE="${HUOHUA_RUN_LOG:-/var/lib/huohua/production.log}"
 MAX_ATTEMPTS="${HUOHUA_MAX_ATTEMPTS:-3}"
 RETRY_DELAY_SECONDS="${HUOHUA_RETRY_DELAY_SECONDS:-15}"
 

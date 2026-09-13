@@ -11,6 +11,8 @@ import os
 import sys
 from pathlib import Path
 
+from utils import norm
+
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
@@ -44,11 +46,21 @@ def _validate_tasks(value, path):
         seen_ids.add(unique_id)
 
         targets = task.get("targets")
-        if not isinstance(targets, list) or not any(
-            str(target).strip() for target in targets
-        ):
+        if not isinstance(targets, list):
             raise RuntimeError(f"任务文件第 {index} 项没有有效 targets: {path}")
-        normalized.append(task)
+        normalized_targets = [
+            norm(str(target))
+            for target in targets
+            if target is not None
+            and not isinstance(target, (dict, list, tuple, set))
+            and str(target).strip()
+        ]
+        if not normalized_targets:
+            raise RuntimeError(f"任务文件第 {index} 项没有有效 targets: {path}")
+        normalized_task = dict(task)
+        normalized_task["unique_id"] = unique_id
+        normalized_task["targets"] = normalized_targets
+        normalized.append(normalized_task)
     return normalized
 
 
@@ -79,6 +91,11 @@ def _cookie_payload_for_task(cookie_value, unique_id, path):
 
 
 def _set_cookie_environment(tasks, cookie_value, cookies_path):
+    if isinstance(cookie_value, list) and len(tasks) > 1:
+        raise RuntimeError(
+            f"检测到 {len(tasks)} 个账号，但 Cookie 文件是单账号数组；"
+            f"请改用按 unique_id 映射的对象: {cookies_path}"
+        )
     for task in tasks:
         unique_id = str(task["unique_id"]).strip()
         payload = _cookie_payload_for_task(cookie_value, unique_id, cookies_path)

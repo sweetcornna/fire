@@ -28,18 +28,21 @@ CONVERSATION_LIST_SELECTOR = ".conversationConversationListwrapper"
 # Keep the legacy selector as the public/tested constant while using the
 # current contenteditable marker as a fallback on the live page.
 CHAT_EDITOR_SELECTOR = ".messageEditorimChatEditorContainer"
-# Douyin has used several editor wrappers over time.  Match the semantic
-# "发送消息" marker first, then keep the legacy class for older revisions.
-CHAT_EDITOR_FALLBACK_SELECTOR = ", ".join(
-    (
-        '[contenteditable="true"][data-placeholder*="发送消息"]',
-        '[contenteditable="true"][aria-label*="发送消息"]',
-        '[contenteditable="true"][placeholder*="发送消息"]',
-        '[role="textbox"][contenteditable="true"]',
-        'textarea[placeholder*="发送消息"]',
-        CHAT_EDITOR_SELECTOR,
-    )
+# Strict editable input selector for typing actions (must not include outer container)
+CHAT_INPUT_SELECTOR_PARTS = (
+    '[contenteditable="true"][data-placeholder*="发送消息"]',
+    '[contenteditable="true"][aria-label*="发送消息"]',
+    '[contenteditable="true"][placeholder*="发送消息"]',
+    '[role="textbox"][contenteditable="true"]',
+    'div.zone-container[contenteditable="true"]',
+    'div.messageEditorinputArea[contenteditable="true"]',
+    'textarea[placeholder*="发送消息"]',
+    '[contenteditable="true"]',
 )
+CHAT_INPUT_SELECTOR = ", ".join(CHAT_INPUT_SELECTOR_PARTS)
+# Douyin has used several editor wrappers over time. Match the semantic
+# "发送消息" marker first, then keep the legacy class for older revisions.
+CHAT_EDITOR_FALLBACK_SELECTOR = f"{CHAT_INPUT_SELECTOR}, {CHAT_EDITOR_SELECTOR}"
 SEARCH_INPUT_SELECTORS = (
     'input[placeholder*="搜索"]',
     'input[aria-label*="搜索"]',
@@ -317,13 +320,23 @@ def handle_response(response: Response):
         # print(f"URL: {response.url}")
         # print(f"状态码: {response.status}")
         try:
+            if getattr(response, "status", 200) >= 400:
+                return
             # 获取接口返回的 JSON 数据（就是你在 Network 里看到的内容）
             json_data = response.json()
             # print("\n📦 响应 JSON 数据：")
             # print(json.dumps(json_data, indent=4, ensure_ascii=False))
             items = json_data.get("data") or json_data.get("user_list") or []
             if isinstance(items, dict):
-                items = items.get("user_list") or items.get("users") or items.get("list") or []
+                nested_items = next(
+                    (
+                        items.get(key)
+                        for key in ("user_list", "users", "list")
+                        if items.get(key) is not None
+                    ),
+                    None,
+                )
+                items = nested_items if nested_items is not None else [items]
             if isinstance(items, dict):
                 items = [items]
             if not isinstance(items, list):
@@ -331,7 +344,14 @@ def handle_response(response: Response):
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                user = item.get("user") if isinstance(item.get("user"), dict) else item
+                user = next(
+                    (
+                        item.get(key)
+                        for key in ("user", "user_info", "userInfo")
+                        if isinstance(item.get(key), dict)
+                    ),
+                    item,
+                )
                 short_id = _norm_value(item.get("short_id"))
                 unique_id = _norm_value(item.get("unique_id"))
                 sec_uid = _norm_value(item.get("sec_uid", ""))
@@ -351,7 +371,7 @@ def handle_response(response: Response):
                         f"short_id={short_id}, unique_id={unique_id}, "
                         f"nickname={nickname}, remark_name={remark_name}"
                     )
-                for key in {nickname, remark_name}:
+                for key in {nickname, remark_name, short_id, unique_id, sec_uid}:
                     if key:
                         userIDDict[key] = values
         except Exception as e:
@@ -371,6 +391,7 @@ def retry_operation(name, operation, retries=3, delay=2, *args, **kwargs):
     :param args: 传递给操作的参数
     :param kwargs: 传递给操作的关键字参数
     """
+    retries = max(1, int(retries))
     for attempt in range(retries):
         try:
             return operation(*args, **kwargs)
@@ -601,7 +622,9 @@ def _load_delivery_state():
     try:
         with path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            raise RuntimeError(f"续火状态文件格式错误：顶层必须是对象: {path}")
+        return data
     except FileNotFoundError:
         return {}
     except (OSError, ValueError) as error:
@@ -613,9 +636,20 @@ def _load_delivery_state():
 
 def _today_delivery_state(state=None):
     state = state if state is not None else _load_delivery_state()
+    if not isinstance(state, dict):
+        raise RuntimeError("续火状态文件格式错误：顶层必须是对象")
     days = state.setdefault("days", {})
+    if not isinstance(days, dict):
+        raise RuntimeError("续火状态文件格式错误：days 必须是对象")
     today = date.today().isoformat()
     day_state = days.setdefault(today, {})
+    if not isinstance(day_state, dict):
+        raise RuntimeError("续火状态文件格式错误：当天状态必须是对象")
+    for account_key, account_state in day_state.items():
+        if not isinstance(account_state, dict):
+            raise RuntimeError(
+                f"续火状态文件格式错误：账号 {account_key} 的状态必须是对象"
+            )
     # Keep only a small rolling window; old entries cannot affect today's run.
     for key in list(days):
         if key != today:
@@ -647,20 +681,54 @@ def _persist_delivery_state(state):
         raise RuntimeError(f"续火状态文件写入失败: {path}: {error}") from error
 
 
-def _persist_cookie_snapshot(cookies):
-    """Persist refreshed browser cookies without ever truncating the live file."""
+def _persist_cookie_snapshot(cookies, account_key=None):
+    """Persist refreshed browser cookies without truncating other accounts."""
     value = os.getenv("HUOHUA_COOKIE_PERSIST_FILE", "").strip()
     if not value or not cookies:
         return
     path = Path(value).expanduser()
     try:
+        existing = None
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                existing = json.load(handle)
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as error:
+            raise RuntimeError(f"Cookie 刷新文件读取失败: {path}: {error}") from error
+
+        account_key = _norm_value(
+            account_key or os.getenv("HUOHUA_COOKIE_ACCOUNT_KEY", "")
+        )
+        if isinstance(existing, dict):
+            if not account_key:
+                raise RuntimeError(
+                    f"Cookie 文件是多账号映射，但没有账号标识，拒绝覆盖: {path}"
+                )
+            key_candidates = (
+                account_key,
+                f"COOKIES_{account_key}",
+                f"cookies_{account_key}",
+            )
+            mapping_key = next(
+                (key for key in key_candidates if key in existing),
+                f"COOKIES_{account_key}",
+            )
+            payload = dict(existing)
+            payload[mapping_key] = cookies
+        elif existing is None or isinstance(existing, list):
+            # A flat cookie list is the supported single-account format.
+            payload = cookies
+        else:
+            raise RuntimeError(f"Cookie 文件格式不受支持，拒绝覆盖: {path}")
+
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, temp_name = tempfile.mkstemp(
             prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(cookies, handle, ensure_ascii=False, indent=2)
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -673,14 +741,20 @@ def _persist_cookie_snapshot(cookies):
         raise RuntimeError(f"Cookie 刷新文件写入失败: {path}: {error}") from error
 
 
-def _completed_targets_for_today(username, targets):
+def _completed_targets_for_today(username, targets, aliases=()):
     state = _load_delivery_state()
     _, day_state = _today_delivery_state(state)
-    account_state = day_state.get(_delivery_state_key(username), {})
+    account_keys = [_delivery_state_key(username)] + [
+        _delivery_state_key(alias) for alias in aliases
+    ]
     completed = {
         _delivery_state_key(target)
         for target in targets
-        if _delivery_state_key(target) in account_state
+        if any(
+            _delivery_state_key(target)
+            in day_state.get(account_key, {})
+            for account_key in account_keys
+        )
     }
     return completed
 
@@ -696,7 +770,118 @@ def _mark_target_sent_today(username, target):
     _persist_delivery_state(state)
 
 
-def _send_message_to_target(page, account_name, target, message=None):
+def _chat_input_is_search_like(candidate):
+    for attribute in ("placeholder", "aria-label", "data-placeholder", "title"):
+        try:
+            value = candidate.get_attribute(attribute) or ""
+        except Exception:
+            value = ""
+        if "搜索" in value:
+            return True
+    return False
+
+
+def _chat_input_score(page, candidate, selector_index):
+    """Prefer the semantic send editor and avoid the left search box."""
+    if _chat_input_is_search_like(candidate):
+        return 10000 + selector_index
+    if selector_index < 3:
+        return selector_index
+
+    # Marker-free fallbacks are only safe when they are in the right-hand chat
+    # pane. Geometry is best-effort so test doubles and older Playwright
+    # versions can still use the selector order.
+    try:
+        list_box = page.locator(CONVERSATION_LIST_SELECTOR).bounding_box()
+        candidate_box = candidate.bounding_box()
+        if list_box and candidate_box:
+            list_right = _box_value(list_box, "x") + _box_value(list_box, "width")
+            candidate_left = _box_value(candidate_box, "x")
+            if candidate_left >= list_right - 40:
+                return 50 + selector_index
+            return 500
+    except Exception:
+        pass
+    return 100 + selector_index
+
+
+def _wait_for_chat_input(page, timeout=FALLBACK_ELEMENT_TIMEOUT_MS):
+    deadline = time.monotonic() + max(0, timeout) / 1000
+    while True:
+        candidate = _find_chat_input(page)
+        if candidate is not None:
+            return candidate
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.1)
+
+
+def _find_chat_input(page):
+    """Find an editable message target, with a legacy wrapper fallback."""
+    candidates = []
+    for selector_index, selector in enumerate(CHAT_INPUT_SELECTOR_PARTS):
+        try:
+            locator = page.locator(selector)
+            count = locator.count()
+        except Exception:
+            continue
+        for index in range(count):
+            try:
+                candidate = locator.nth(index)
+                if not candidate.is_visible() or _chat_input_is_search_like(candidate):
+                    continue
+                candidates.append(
+                    (
+                        _chat_input_score(page, candidate, selector_index),
+                        selector_index,
+                        index,
+                        candidate,
+                    )
+                )
+            except Exception:
+                continue
+
+    if candidates:
+        return min(candidates, key=lambda item: item[:3])[3]
+
+    # Older Douyin builds made the wrapper itself editable and did not expose
+    # a semantic placeholder.  Use it only after all strict candidates fail.
+    try:
+        wrapper_locator = page.locator(CHAT_EDITOR_SELECTOR)
+        for index in range(wrapper_locator.count()):
+            wrapper = wrapper_locator.nth(index)
+            if wrapper.is_visible():
+                return wrapper
+    except Exception:
+        pass
+    return None
+
+
+def _submit_chat_message(page, account_name, target, message=None, delivery_key=None):
+    """Type and submit message into the currently confirmed chat editor."""
+    chat_input = _wait_for_chat_input(page)
+    if chat_input is None:
+        raise RuntimeError("当前聊天没有可用的消息输入框")
+    message = build_message() if message is None else str(message)
+    lines = re.split(r"\\n|\r?\n", message)
+    for index, line in enumerate(lines):
+        chat_input.type(line)
+        if index < len(lines) - 1:
+            chat_input.press("Shift+Enter")
+
+    logger.debug(
+        f"账号 {account_name} 准备发送消息给好友 {target}：\n\t{message}"
+    )
+    chat_input.press("Enter")
+    time.sleep(2)
+    _mark_target_sent_today(delivery_key or account_name, target)
+    logger.debug(f"账号 {account_name} 给好友 {target} 发送消息完成")
+    return target
+
+
+def _send_message_to_target(
+    page, account_name, target, message=None, delivery_key=None
+):
     """Select, verify, and send one target's message.
 
     A target is considered delivered only after the chat editor is confirmed
@@ -715,31 +900,21 @@ def _send_message_to_target(page, account_name, target, message=None):
     if not wait_for_chat_editor(page, account_name, selected_target):
         raise RuntimeError(f"目标好友 {target} 的聊天输入框未确认")
 
-    chat_input = page.locator(CHAT_EDITOR_FALLBACK_SELECTOR)
-    message = message or build_message()
-    lines = message.split("\\n")
-    for index, line in enumerate(lines):
-        chat_input.type(line)
-        if index < len(lines) - 1:
-            chat_input.press("Shift+Enter")
-
-    logger.debug(
-        f"账号 {account_name} 准备发送消息给好友 {selected_target}：\n\t{message}"
-    )
-    chat_input.press("Enter")
-    time.sleep(2)
-    _mark_target_sent_today(account_name, target)
-    logger.debug(f"账号 {account_name} 给好友 {selected_target} 发送消息完成")
+    _submit_chat_message(page, account_name, target, message, delivery_key)
     return selected_target
 
 
-def _send_target_with_retries(page, account_name, target, message=None):
+def _send_target_with_retries(
+    page, account_name, target, message=None, delivery_key=None
+):
     """Send one target with a fresh chat page between bounded attempts."""
     retry_times = max(1, int(config.get("taskRetryTimes", DEFAULT_TARGET_RETRY_TIMES)))
     for attempt in range(1, retry_times + 1):
         try:
             _dismiss_login_prompt(page, account_name)
-            return _send_message_to_target(page, account_name, target, message)
+            return _send_message_to_target(
+                page, account_name, target, message, delivery_key
+            )
         except Exception as error:
             logger.warning(
                 f"账号 {account_name} 发送目标 {target} 第 {attempt}/{retry_times} 次失败: {error}"
@@ -789,10 +964,22 @@ def _chat_target_match(page, target):
                     .trim();
                 const normalizedTerms = terms.map(normalize).filter(Boolean);
                 const list = document.querySelector(listSelector);
-                const editor = document.querySelector(editorSelector);
                 const listRect = list ? list.getBoundingClientRect() : null;
-                const editorRect = editor ? editor.getBoundingClientRect() : null;
                 const rightPaneStart = listRect ? listRect.right : window.innerWidth * 0.3;
+                const editor = Array.from(document.querySelectorAll(editorSelector))
+                    .find((element) => {
+                        const marker = [
+                            element.getAttribute('placeholder'),
+                            element.getAttribute('aria-label'),
+                            element.getAttribute('data-placeholder'),
+                            element.getAttribute('title'),
+                        ].filter(Boolean).join(' ');
+                        const rect = element.getBoundingClientRect();
+                        return !marker.includes('搜索')
+                            && rect
+                            && rect.right > rightPaneStart;
+                    }) || null;
+                const editorRect = editor ? editor.getBoundingClientRect() : null;
                 const editorTop = editorRect ? editorRect.top : window.innerHeight;
                 const snippets = [];
 
@@ -1205,13 +1392,18 @@ def scroll_and_select_user(page, username, targets):
                 return
 
 
-def do_user_task(browser, username, cookies, targets):
+def do_user_task(browser, username, cookies, targets, unique_id=None):
     account_name = username
+    delivery_account_key = _norm_value(unique_id or account_name)
     all_targets = list(
         dict.fromkeys(_norm_value(target) for target in targets if _norm_value(target))
     )
     if not all_targets:
         raise RuntimeError(f"账号 {account_name} 没有有效续火目标")
+
+    # API mappings are account-specific.  Never let a previous account's
+    # nickname/ID aliases select a similarly named contact in this account.
+    userIDDict.clear()
 
     context = browser.new_context()  # 每个任务使用独立的上下文
     session_authenticated = False
@@ -1270,18 +1462,16 @@ def do_user_task(browser, username, cookies, targets):
     # 注入 Cookie
     context.add_cookies(cookies)
 
-    if config.get("diagnoseUserSearch"):
-        logger.info(f"账号 {username} 启用用户搜索诊断模式，不发送消息")
-        diagnose_user_search(page, username, targets)
-        context.close()
-        return
-
-    if config.get("diagnoseFriendMatching"):
-        diagnose_friend_matching(page, username, targets)
-        context.close()
-        return
-
     try:
+        if config.get("diagnoseUserSearch"):
+            logger.info(f"账号 {username} 启用用户搜索诊断模式，不发送消息")
+            diagnose_user_search(page, username, targets)
+            return
+
+        if config.get("diagnoseFriendMatching"):
+            diagnose_friend_matching(page, username, targets)
+            return
+
         # 打开抖音网页聊天页面
         retry_operation(
             "打开抖音网页聊天页面",
@@ -1296,7 +1486,9 @@ def do_user_task(browser, username, cookies, targets):
             raise RuntimeError(f"账号 {account_name} 聊天页面未就绪")
         session_authenticated = True
 
-        completed = _completed_targets_for_today(account_name, all_targets)
+        completed = _completed_targets_for_today(
+            delivery_account_key, all_targets, aliases=(account_name,)
+        )
         pending_targets = [
             target for target in all_targets if _delivery_state_key(target) not in completed
         ]
@@ -1323,7 +1515,13 @@ def do_user_task(browser, username, cookies, targets):
                     logger.warning(
                         f"账号 {account_name} 重置聊天页面失败，继续尝试目标 {target}: {error}"
                     )
-            delivered = _send_target_with_retries(page, account_name, target, message)
+            delivered = _send_target_with_retries(
+                page,
+                account_name,
+                target,
+                message,
+                delivery_account_key,
+            )
             reset_before_next = not delivered
             if delivered:
                 sent_count += 1
@@ -1344,7 +1542,7 @@ def do_user_task(browser, username, cookies, targets):
     finally:
         try:
             if session_authenticated:
-                _persist_cookie_snapshot(context.cookies())
+                _persist_cookie_snapshot(context.cookies(), delivery_account_key)
         finally:
             context.close()
 
@@ -1368,14 +1566,31 @@ def runTasks():
                 f"用户: {user.get('username', '未知用户')}, 目标好友: {user['targets']}"
             )
 
+        failed_accounts = []
         for user in userData:
             cookies = user["cookies"]
             targets = user["targets"]
             username = user.get("username", "未知用户")
             logger.info(f"开始处理账号 {username}")
-            # 创建任务
-            do_user_task(browser, username, cookies, targets)
+            try:
+                do_user_task(
+                    browser,
+                    username,
+                    cookies,
+                    targets,
+                    user.get("unique_id") or username,
+                )
+            except Exception as error:
+                failed_accounts.append((username, error))
+                logger.error(f"账号 {username} 任务失败，将继续处理其他账号: {error}")
+                continue
             logger.info(f"账号 {username} 任务完成")
+
+        if failed_accounts:
+            details = "; ".join(
+                f"{username}: {error}" for username, error in failed_accounts
+            )
+            raise RuntimeError(f"以下账号续火失败: {details}")
     finally:
         # 关闭浏览器实例
         browser.close()

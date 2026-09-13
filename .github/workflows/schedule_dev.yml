@@ -15,7 +15,8 @@ on:
         default: "5"
         type: string
 concurrency:
-  group: douyin-spark-${{ github.workflow }}-${{ github.ref }}
+  # Keep this in the same queue as schedule.yml to prevent duplicate sends.
+  group: douyin-spark-dev
   cancel-in-progress: false
 jobs:
   run-main:
@@ -41,9 +42,10 @@ jobs:
     - name: Ensure browsers are installed
       if: ${{ inputs.preview_only != true }}
       run: playwright install chromium --with-deps --only-shell
-    - name: Export Github Environment Variables
+    - name: Export Github Environment Variables and Secrets to JSON
       env:
         VARS_JSON: ${{ toJson(vars) }}
+        SECRETS_JSON: ${{ toJson(secrets) }}
       run: python utils/export_github_env.py
     - name: Restore daily delivery state
       id: delivery-date
@@ -54,11 +56,12 @@ jobs:
       id: delivery-cache
       with:
         path: .state/delivery-state.json
-        key: huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}
+        key: huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}-
+          huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}
     - name: Run DouYin Spark Flow
       env:
-        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        COOKIES_33217367887: ${{ secrets.COOKIES_33217367887 }}
         PREVIEW_ONLY: ${{ inputs.preview_only || 'false' }}
         AI_PREVIEW_COUNT: ${{ inputs.preview_count || '5' }}
         BROWSER_TIMEOUT: "60000"
@@ -72,10 +75,10 @@ jobs:
         REQUIRE_ALL_TARGETS: "1"
       run: python main.py
     - uses: actions/cache/save@v4
-      if: ${{ always() && steps.delivery-cache.outputs.cache-hit != 'true' }}
+      if: ${{ always() && !cancelled() }}
       with:
         path: .state/delivery-state.json
-        key: huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}
+        key: huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}-${{ github.run_id }}-${{ github.run_attempt }}
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}
       with:

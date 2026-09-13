@@ -4,7 +4,8 @@ on:
   schedule: # 定时任务
     - cron: "0 1 * * *" # 每天 1:00 UTC（对应北京时间 9:00）
 concurrency:
-  group: douyin-spark-${{ github.workflow }}-${{ github.ref }}
+  # Native schedule and the external schedule_dev dispatcher share one lock.
+  group: douyin-spark-dev
   cancel-in-progress: false
 jobs:
   run-main:
@@ -42,7 +43,10 @@ jobs:
       id: delivery-cache
       with:
         path: .state/delivery-state.json
-        key: huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}
+        key: huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}-
+          huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}
     - name: Run DouYin Spark Flow
       env:
         BROWSER_TIMEOUT: "60000"
@@ -56,10 +60,10 @@ jobs:
         DELIVERY_STATE_FILE: .state/delivery-state.json
       run: python main.py
     - uses: actions/cache/save@v4
-      if: ${{ always() && steps.delivery-cache.outputs.cache-hit != 'true' }}
+      if: ${{ always() && !cancelled() }}
       with:
         path: .state/delivery-state.json
-        key: huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}
+        key: huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}-${{ github.run_id }}-${{ github.run_attempt }}
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}
       with:

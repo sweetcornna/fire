@@ -10,6 +10,8 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(tasks.CONVERSATION_LIST_SELECTOR, '.conversationConversationListwrapper')
         self.assertEqual(tasks.CHAT_EDITOR_SELECTOR, '.messageEditorimChatEditorContainer')
         self.assertIn('[contenteditable="true"]', tasks.CHAT_EDITOR_FALLBACK_SELECTOR)
+        self.assertIn('[contenteditable="true"]', tasks.CHAT_INPUT_SELECTOR)
+        self.assertNotIn(tasks.CHAT_EDITOR_SELECTOR, tasks.CHAT_INPUT_SELECTOR)
 
 
 if __name__ == '__main__':
