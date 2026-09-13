@@ -1,6 +1,17 @@
 name: DouYin Spark Flow Schedule Run
 on:
   workflow_dispatch: # 允许手动触发
+    inputs:
+      preview_only:
+        description: "只生成预览，不登录抖音、不发送"
+        required: false
+        default: false
+        type: boolean
+      preview_count:
+        description: "预览生成条数（1-10）"
+        required: false
+        default: "5"
+        type: string
   schedule: # 定时任务
     - cron: "0 1 * * *" # 每天 1:00 UTC（对应北京时间 9:00）
 concurrency:
@@ -49,6 +60,8 @@ jobs:
           huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}
     - name: Run DouYin Spark Flow
       env:
+        PREVIEW_ONLY: ${{ inputs.preview_only || 'false' }}
+        AI_PREVIEW_COUNT: ${{ inputs.preview_count || '5' }}
         BROWSER_TIMEOUT: "60000"
         CHAT_OPEN_TIMEOUT: "15000"
         CHAT_READY_TIMEOUT: "30000"
