@@ -2,11 +2,25 @@
 
 name: 【dev（测试）分支】DouYin Spark Flow Schedule Run
 on:
-  workflow_dispatch: # 由外部服务器 cron 触发；移除 GitHub 原生 schedule 以避免双重触发导致重复发消息
+  workflow_dispatch: # 由外部服务器 cron 触发（北京 09:00）；移除 GitHub 原生 schedule 以避免双重触发导致重复发消息
+    inputs:
+      preview_only:
+        description: "只让项目生成预览，不登录抖音、不发送"
+        required: false
+        default: false
+        type: boolean
+      preview_count:
+        description: "预览生成条数（1-10）"
+        required: false
+        default: "5"
+        type: string
+concurrency:
+  # Keep this in the same queue as schedule.yml to prevent duplicate sends.
+  group: douyin-spark-dev
+  cancel-in-progress: false
 jobs:
   run-main:
-    if: github.ref_name == 'dev'
-    timeout-minutes: 20
+    timeout-minutes: 90
     runs-on: ubuntu-latest
     environment: user-data
     steps:
@@ -18,6 +32,7 @@ jobs:
       with:
         python-version: '3.11'
     - name: Test Douyin Accessibility
+      if: ${{ inputs.preview_only != true }}
       run: |
         curl -I https://creator.douyin.com/
     - name: Install dependencies
@@ -25,14 +40,46 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     - name: Ensure browsers are installed
+      if: ${{ inputs.preview_only != true }}
       run: playwright install chromium --with-deps --only-shell
-    - name: Export Github Environment Variables and Secrets to JSON
+    - name: Export Github Environment Variables
       env:
         VARS_JSON: ${{ toJson(vars) }}
-        SECRETS_JSON: ${{ toJson(secrets) }}
       run: python utils/export_github_env.py
+    - name: Restore daily delivery state
+      id: delivery-date
+      run: |
+        mkdir -p .state
+        echo "today=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v4
+      id: delivery-cache
+      with:
+        path: .state/delivery-state.json
+        key: huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}-
+          huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}
     - name: Run DouYin Spark Flow
+      env:
+        PREVIEW_ONLY: ${{ inputs.preview_only || 'false' }}
+        AI_PREVIEW_COUNT: ${{ inputs.preview_count || '5' }}
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        COOKIES_33217367887: ${{ secrets.COOKIES_33217367887 }}
+        BROWSER_TIMEOUT: "60000"
+        CHAT_OPEN_TIMEOUT: "15000"
+        CHAT_READY_TIMEOUT: "30000"
+        TASK_RETRY_TIMES: "3"
+        CHAT_SEARCH_RESULT_WAIT_SECONDS: "6"
+        ALLOW_GLOBAL_USER_SEARCH: "1"
+        HEADLESS: "1"
+        DELIVERY_STATE_FILE: .state/delivery-state.json
+        REQUIRE_ALL_TARGETS: "1"
       run: python main.py
+    - uses: actions/cache/save@v4
+      if: ${{ always() && !cancelled() }}
+      with:
+        path: .state/delivery-state.json
+        key: huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}-${{ github.run_id }}-${{ github.run_attempt }}
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}
       with:
