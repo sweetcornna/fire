@@ -11,10 +11,13 @@ import os
 import sys
 from pathlib import Path
 
-from utils import norm
-
-
+# When this file is executed directly by systemd, Python starts with
+# ``deploy/`` on sys.path rather than the repository root.
 ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from utils import norm
 
 
 def _read_json(path_value, label):
@@ -150,7 +153,6 @@ def main():
     _set_default_environment()
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
-    sys.path.insert(0, str(ROOT_DIR))
     import main as application
 
     application.main()
