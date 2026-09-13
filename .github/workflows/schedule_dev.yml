@@ -42,10 +42,9 @@ jobs:
     - name: Ensure browsers are installed
       if: ${{ inputs.preview_only != true }}
       run: playwright install chromium --with-deps --only-shell
-    - name: Export Github Environment Variables and Secrets to JSON
+    - name: Export Github Environment Variables
       env:
         VARS_JSON: ${{ toJson(vars) }}
-        SECRETS_JSON: ${{ toJson(secrets) }}
       run: python utils/export_github_env.py
     - name: Restore daily delivery state
       id: delivery-date
@@ -64,6 +63,8 @@ jobs:
       env:
         PREVIEW_ONLY: ${{ inputs.preview_only || 'false' }}
         AI_PREVIEW_COUNT: ${{ inputs.preview_count || '5' }}
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        COOKIES_33217367887: ${{ secrets.COOKIES_33217367887 }}
         BROWSER_TIMEOUT: "60000"
         CHAT_OPEN_TIMEOUT: "15000"
         CHAT_READY_TIMEOUT: "30000"

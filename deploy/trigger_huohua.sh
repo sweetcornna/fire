@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Dispatch the production dev workflow once a day from the server cron.
+# Dispatch the production workflow once a day from the server cron.
 set -Eeuo pipefail
 
-TOKEN_FILE="${HUOHUA_GITHUB_TOKEN_FILE:-/root/.huohua_token}"
-LOG_FILE="${HUOHUA_TRIGGER_LOG:-/root/huohua_trigger.log}"
-LOCK_FILE="${HUOHUA_TRIGGER_LOCK:-/var/lock/huohua-trigger.lock}"
+TOKEN_FILE="${HUOHUA_GITHUB_TOKEN_FILE:-/root/.fire_gh_token}"
+LOG_FILE="${HUOHUA_TRIGGER_LOG:-/root/fire_trigger.log}"
+LOCK_FILE="${HUOHUA_TRIGGER_LOCK:-/var/lock/fire-trigger.lock}"
 REPOSITORY="${HUOHUA_GITHUB_REPOSITORY:-sweetcornna/fire}"
-WORKFLOW="${HUOHUA_GITHUB_WORKFLOW:-schedule_dev.yml}"
-REF="${HUOHUA_GITHUB_REF:-dev}"
+WORKFLOW="${HUOHUA_GITHUB_WORKFLOW:-schedule.yml}"
+REF="${HUOHUA_GITHUB_REF:-main}"
 WAIT_SECONDS="${HUOHUA_WAIT_SECONDS:-2700}"
 POLL_SECONDS="${HUOHUA_POLL_SECONDS:-15}"
 DISPATCH_ATTEMPTS="${HUOHUA_DISPATCH_ATTEMPTS:-3}"
