@@ -258,6 +258,16 @@ class FriendMatchingTests(unittest.TestCase):
         tasks.time.sleep = self._sleep
         tasks.userIDDict = self._user_id_dict
 
+    def _load_api_users(self, users):
+        class Response:
+            url = "https://www.douyin.com/aweme/v1/web/im/user/info"
+            status = 200
+
+            def json(self):
+                return {"data": users}
+
+        tasks.handle_response(Response())
+
     def test_scroll_rechecks_seen_friend_after_api_mapping_arrives(self):
         def add_mapping():
             tasks.userIDDict["熊霖竹"] = [
@@ -365,6 +375,122 @@ class FriendMatchingTests(unittest.TestCase):
 
         self.assertEqual(matched, {"兴隆竹🏵️": "熊霖竹"})
         self.assertEqual(unmatched, ["漏发好友"])
+
+    def test_alias_shared_nickname_never_imports_another_users_ids(self):
+        users = [
+            {"short_id": "101", "unique_id": "id-a", "sec_uid": "sec-a",
+             "nickname": "同名", "remark_name": "甲备注"},
+            {"short_id": "202", "unique_id": "id-b", "sec_uid": "sec-b",
+             "nickname": "同名", "remark_name": "乙备注"},
+        ]
+        for ordered_users in (users, list(reversed(users))):
+            with self.subTest(first_id=ordered_users[0]["unique_id"]):
+                tasks.userIDDict.clear()
+                self._load_api_users(ordered_users)
+
+                for own, other in ((users[0], users[1]), (users[1], users[0])):
+                    terms = tasks.get_search_terms_for_target(own["unique_id"])
+                    self.assertNotIn("同名", terms)
+                    for key in ("short_id", "unique_id", "sec_uid", "remark_name"):
+                        self.assertNotIn(other[key], terms)
+                        self.assertIsNone(
+                            tasks.checkTargetName(other[key], [own["unique_id"]])
+                        )
+                        self.assertEqual(
+                            tasks.checkTargetName(own[key], [own["unique_id"]]),
+                            own["unique_id"],
+                        )
+
+    def test_alias_ambiguous_conversation_is_not_selected_for_either_id(self):
+        self._load_api_users([
+            {"unique_id": "id-a", "nickname": "同名"},
+            {"unique_id": "id-b", "nickname": "同名"},
+        ])
+        page = _Page(["同名"], after_first_scroll=lambda: None)
+
+        for target in ("id-a", "id-b"):
+            self.assertIsNone(
+                tasks.click_matching_visible_user(page, "主账号", [target])
+            )
+        self.assertEqual(page.clicked_titles, [])
+        self.assertEqual(
+            tasks.summarize_target_matches(["同名"], ["id-a", "id-b"]),
+            ({}, ["id-a", "id-b"]),
+        )
+
+    def test_alias_unique_remarks_disambiguate_shared_nickname(self):
+        self._load_api_users([
+            {"unique_id": "id-a", "nickname": "同名", "remark_name": "甲备注"},
+            {"unique_id": "id-b", "nickname": "同名", "remark_name": "乙备注"},
+        ])
+
+        for targets in (["id-a", "id-b"], ["id-b", "id-a"]):
+            self.assertEqual(
+                tasks.summarize_target_matches(["乙备注", "甲备注"], targets),
+                ({"id-b": "乙备注", "id-a": "甲备注"}, []),
+            )
+
+    def test_alias_ambiguous_nickname_target_has_no_matching_candidates(self):
+        self._load_api_users([
+            {"unique_id": "id-a", "nickname": "同名"},
+            {"unique_id": "id-b", "nickname": "同名"},
+        ])
+
+        self.assertEqual(tasks.get_search_terms_for_target("同名"), [])
+        for visible_title in ("同名", "id-a", "id-b"):
+            self.assertIsNone(tasks.checkTargetName(visible_title, ["同名"]))
+
+    def test_alias_nickname_remark_chain_cannot_reach_other_users(self):
+        self._load_api_users([
+            {"unique_id": "id-a", "nickname": "连接甲", "remark_name": "独立备注"},
+            {"unique_id": "id-b", "nickname": "连接乙", "remark_name": "连接甲"},
+            {"unique_id": "id-c", "nickname": "第三人", "remark_name": "连接乙"},
+        ])
+
+        terms = tasks.get_search_terms_for_target("id-a")
+        self.assertIn("独立备注", terms)
+        for unrelated in ("连接甲", "连接乙", "第三人", "id-b", "id-c"):
+            self.assertNotIn(unrelated, terms)
+            self.assertIsNone(tasks.checkTargetName(unrelated, ["id-a"]))
+
+    def test_alias_stable_id_takes_priority_over_another_users_nickname(self):
+        self._load_api_users([
+            {"unique_id": "id-a", "nickname": "甲"},
+            {"unique_id": "id-b", "nickname": "id-a", "remark_name": "乙"},
+        ])
+
+        self.assertNotIn("id-a", tasks.get_search_terms_for_target("id-b"))
+        self.assertIsNone(tasks.checkTargetName("id-a", ["id-b"]))
+        self.assertIsNone(tasks.checkTargetName("乙", ["id-a"]))
+        self.assertEqual(tasks.checkTargetName("id-a", ["id-b", "id-a"]), "id-a")
+
+    def test_alias_same_identity_updates_keep_nonconflicting_names(self):
+        self._load_api_users([{"unique_id": "id-a", "nickname": "旧昵称"}])
+        self._load_api_users([{"unique_id": "id-a", "nickname": "新昵称"}])
+
+        for nickname in ("旧昵称", "新昵称"):
+            self.assertEqual(tasks.checkTargetName(nickname, ["id-a"]), "id-a")
+        self.assertEqual(tasks.checkTargetName("id-a", ["新昵称"]), "新昵称")
+
+    def test_alias_user_number_does_not_import_a_conflicting_nickname(self):
+        self._load_api_users([
+            {"unique_id": "123", "nickname": "甲"},
+            {"unique_id": "id-b", "nickname": "用户123"},
+        ])
+
+        terms = tasks.get_search_terms_for_target("用户123")
+        self.assertIn("123", terms)
+        self.assertIn("甲", terms)
+        self.assertNotIn("用户123", terms)
+        self.assertNotIn("id-b", terms)
+        self.assertIsNone(tasks.checkTargetName("id-b", ["用户123"]))
+        self.assertEqual(tasks.checkTargetName("123", ["用户123"]), "用户123")
+
+    def test_alias_unmapped_names_still_require_normalized_exact_match(self):
+        self.assertEqual(tasks.checkTargetName(" 甲\u3000", ["甲"]), "甲")
+        self.assertIsNone(tasks.checkTargetName("甲乙", ["甲"]))
+        self.assertIsNone(tasks.checkTargetName("", [""]))
+        self.assertEqual(tasks.get_search_terms_for_target("\u200b"), [])
 
     def test_find_search_input_prefers_sidebar_search_near_conversation_list(self):
         page = _Page(
@@ -530,7 +656,15 @@ class FriendMatchingTests(unittest.TestCase):
             os.environ,
             {"DELIVERY_STATE_FILE": os.path.join(directory, "state.json")},
             clear=False,
-        ), patch.object(tasks, "build_message", return_value="甲\\n乙"):
+        ), patch.object(tasks, "build_message", return_value="甲\\n乙"), patch.object(
+            tasks, "_chat_submission_snapshot",
+            side_effect=[
+                {"editor_text": "", "message_count": 0, "failure_count": 0},
+                {"editor_text": "甲 乙", "message_count": 0, "failure_count": 0},
+            ],
+        ), patch.object(tasks, "_wait_for_submission_confirmation"), patch.object(
+            tasks, "_chat_target_match", return_value=(True, ["好友"])
+        ):
             result = tasks._submit_chat_message(
                 Page(), "显示名", "好友", delivery_key="stable-account-id"
             )

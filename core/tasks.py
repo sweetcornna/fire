@@ -4,6 +4,8 @@ import requests
 import json
 import os
 import tempfile
+import hashlib
+import inspect
 from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -64,6 +66,15 @@ DEFAULT_TARGET_RETRY_TIMES = 3
 DEFAULT_SEARCH_RESULT_WAIT_SECONDS = 4
 DEFAULT_CHAT_READY_TIMEOUT_MS = 30000
 CHAT_PAGE_URL = "https://www.douyin.com/chat"
+CHAT_HEADER_SELECTOR = (
+    '[class*="chatHeader"], [class*="ChatHeader"], [class*="chat-header"], '
+    '[class*="messageHeader"], header, [role="heading"]'
+)
+_unconfirmed_submissions = set()
+
+
+class DeliveryUncertainError(RuntimeError):
+    """Submission may have happened; replaying Enter could send a duplicate."""
 
 
 def _norm_value(value) -> str:
@@ -93,21 +104,50 @@ def _iter_user_records():
         yield list(record)
 
 
+def _user_record_identity(values):
+    identifiers = tuple(values[:3])
+    return identifiers if any(identifiers) else tuple(values)
+
+
 def get_search_terms_for_target(target):
+    """Resolve IDs first; names may only identify one known user."""
     target = _norm_value(target)
+    if not target:
+        return []
     terms = [target]
     user_number_match = USER_NUMBER_TARGET_RE.match(target)
     if user_number_match:
         terms.append(user_number_match.group(1))
-    term_set = set(terms)
+    seeds = set(terms)
+    records = [(values + [""] * 5)[:5] for values in _iter_user_records()]
+    matches = [values for values in records if seeds.intersection(values[:3])]
+    if not matches:
+        matches = [values for values in records if seeds.intersection(values[3:])]
+    if not matches:
+        return _dedupe(terms)
 
-    for values in _iter_user_records():
-        short_id, unique_id, sec_uid, nickname, remark_name = (values + [""] * 5)[:5]
-        if term_set & {short_id, unique_id, sec_uid, nickname, remark_name}:
-            terms.extend([remark_name, nickname, unique_id, short_id])
-            term_set.update(_dedupe(terms))
+    identities = {_user_record_identity(values) for values in matches}
+    if len(identities) != 1:
+        return []
+    identity = identities.pop()
+    own_ids = set()
+    other_ids = set()
+    other_aliases = set()
+    for values in records:
+        short_id, unique_id, sec_uid, nickname, remark_name = values
+        if _user_record_identity(values) == identity:
+            own_ids.update(value for value in values[:3] if value)
+            terms.extend([remark_name, nickname, unique_id, short_id, sec_uid])
+        else:
+            other_ids.update(value for value in values[:3] if value)
+            other_aliases.update(value for value in values if value)
 
-    return _dedupe(terms)
+    # Never follow an added nickname into another record. An exact stable ID
+    # takes priority over another user's nickname, but a shared name cannot.
+    return _dedupe(
+        term for term in terms
+        if term not in other_aliases or (term in own_ids and term not in other_ids)
+    )
 
 
 def get_user_search_url(term):
@@ -406,39 +446,14 @@ def retry_operation(name, operation, retries=3, delay=2, *args, **kwargs):
                 raise
 
 def checkTargetName(targetName, targets):
-    """检查targetName是否为目标
-    """
-    
-    targetSymbol = None
-    
+    """Match only exact, unambiguous target aliases."""
     targetName = _norm_value(targetName)
-    target_aliases = [
-        (_norm_value(target), set(get_search_terms_for_target(target)))
-        for target in targets
-    ]
-
-    if targetName in userIDDict:
-        values = {_norm_value(v) for v in userIDDict[targetName]}
-        matched = next(
-            (
-                target
-                for target, aliases in target_aliases
-                if values & aliases or targetName in aliases
-            ),
-            None,
-        )
-        if matched:
-            targetSymbol = matched
-    else:
-        targetSymbol = next(
-            (
-                target
-                for target, aliases in target_aliases
-                if targetName in aliases
-            ),
-            None,
-        )
-    return targetSymbol
+    if not targetName:
+        return None
+    for target in targets:
+        if targetName in get_search_terms_for_target(target):
+            return _norm_value(target)
+    return None
 
 
 def _box_value(box, key):
@@ -605,11 +620,10 @@ def _dismiss_login_prompt(page, username):
 def _delivery_state_path():
     """Return the optional persistent delivery state path.
 
-    GitHub Actions is intentionally stateless; the fixed production runner sets
-    this variable so a failed run can resume without sending successful targets
-    a second time.
+    Production runners may override the path; local runs also persist attempts
+    so restarting after an uncertain submission cannot silently replay it.
     """
-    value = os.getenv("DELIVERY_STATE_FILE", "").strip()
+    value = os.getenv("DELIVERY_STATE_FILE", "logs/delivery-state.json").strip()
     return Path(value).expanduser() if value else None
 
 
@@ -744,21 +758,148 @@ def _persist_cookie_snapshot(cookies, account_key=None):
 
 
 def _completed_targets_for_today(username, targets, aliases=()):
+    return {
+        _delivery_state_key(target)
+        for target, status in _target_delivery_statuses(username, targets, aliases).items()
+        if status in {"sent", "submitted"}
+    }
+
+
+def _delivery_recipient_identity(target):
+    """Use only the stable IDs accepted by the current unambiguous alias map."""
+    terms = set(get_search_terms_for_target(target))
+    identities = {
+        tuple((values + [""] * 3)[:3])
+        for values in _iter_user_records()
+        if terms.intersection(value for value in values[:3] if value)
+    }
+    if len(identities) != 1:
+        return {}
+    return {
+        field: value
+        for field, value in zip(("short_id", "unique_id", "sec_uid"), identities.pop())
+        if value
+    }
+
+
+def _delivery_entry_identity(entry):
+    identity = entry.get("recipient_identity")
+    if identity is None:
+        return {}
+    if (
+        not isinstance(identity, dict)
+        or not identity
+        or any(field not in {"short_id", "unique_id", "sec_uid"}
+               or not isinstance(value, str) or not _norm_value(value)
+               for field, value in identity.items())
+    ):
+        raise RuntimeError("续火状态文件格式错误：收件人稳定身份无效")
+    return {field: _norm_value(value) for field, value in identity.items()}
+
+
+def _same_delivery_identity(left, right):
+    shared = left.keys() & right.keys()
+    return bool(shared) and all(left[field] == right[field] for field in shared)
+
+
+def _delivery_recipient_key(target, identity):
+    for field in ("sec_uid", "unique_id", "short_id"):
+        if identity.get(field):
+            return f"@recipient:{field}:{identity[field]}"
+    return _delivery_state_key(target)
+
+
+def _matching_delivery_entries(target, account_state):
+    target_key = _delivery_state_key(target)
+    terms = set(get_search_terms_for_target(target))
+    identity = _delivery_recipient_identity(target)
+    # An unconfirmed name (including 用户123) retains only its original key.
+    legacy_keys = terms if identity else ({target_key} if terms else set())
+    entries = []
+    for key, entry in account_state.items():
+        if not isinstance(entry, dict):
+            if _delivery_state_key(key) in legacy_keys:
+                raise RuntimeError(f"续火状态文件格式错误：目标 {target} 的状态必须是对象")
+            continue
+        entries.append((key, entry, _delivery_entry_identity(entry)))
+
+    if not identity and terms:
+        # Persisted IDs remain useful before the API hydrates. Never infer a
+        # different name from old display text, or override a live conflict.
+        recorded = [
+            saved for key, entry, saved in entries if saved and (
+                target_key in saved.values()
+                or target_key == _delivery_state_key(entry.get("target", key))
+            )
+        ]
+        if recorded and all(_same_delivery_identity(left, right)
+                            for left in recorded for right in recorded):
+            identity = {field: value for saved in recorded for field, value in saved.items()}
+
+    return [
+        (key, entry) for key, entry, saved in entries
+        if (_same_delivery_identity(identity, saved) if saved
+            else _delivery_state_key(key) in legacy_keys)
+    ]
+
+
+def _target_delivery_statuses(username, targets, aliases=()):
     state = _load_delivery_state()
     _, day_state = _today_delivery_state(state)
     account_keys = [_delivery_state_key(username)] + [
         _delivery_state_key(alias) for alias in aliases
     ]
-    completed = {
-        _delivery_state_key(target)
-        for target in targets
-        if any(
-            _delivery_state_key(target)
-            in day_state.get(account_key, {})
-            for account_key in account_keys
-        )
+    statuses = {}
+    today = date.today().isoformat()
+    for target in targets:
+        target_key = _delivery_state_key(target)
+        for account_key in account_keys:
+            account_state = day_state.get(account_key, {})
+            for key, entry in _matching_delivery_entries(target, account_state):
+                status = entry.get("status", "sent" if entry.get("sent_at") else "")
+                if status not in {"pending", "submitted", "sent"}:
+                    raise RuntimeError(f"续火状态文件格式错误：目标 {target} 的提交状态无效")
+                if (today, account_key, key) in _unconfirmed_submissions:
+                    status = "pending"
+                if statuses.get(target_key) != "pending":
+                    statuses[target_key] = status
+            # Preserve in-process protection when persistence was explicitly
+            # disabled or its file has disappeared after a pending write.
+            identity = _delivery_recipient_identity(target)
+            memory_keys = {_delivery_recipient_key(target, identity)}
+            if identity:
+                memory_keys.update(get_search_terms_for_target(target))
+            for key in memory_keys - account_state.keys():
+                if (today, account_key, key) in _unconfirmed_submissions:
+                    statuses[target_key] = "pending"
+    return statuses
+
+
+def _mark_target_pending_today(username, target, message):
+    state, day_state = _today_delivery_state()
+    account_key = _delivery_state_key(username)
+    if _target_delivery_statuses(username, [target]):
+        raise DeliveryUncertainError(f"目标 {target} 已有提交记录，暂停自动重发")
+    identity = _delivery_recipient_identity(target)
+    record_key = _delivery_recipient_key(target, identity)
+    entry = {
+        "status": "pending",
+        "attempted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "message_hash": hashlib.sha256(message.encode("utf-8")).hexdigest(),
+        "target": _delivery_state_key(target),
     }
-    return completed
+    if identity:
+        entry["recipient_identity"] = identity
+    account_state = day_state.setdefault(account_key, {})
+    if record_key in account_state:
+        raise DeliveryUncertainError(f"目标 {target} 的稳定身份与已有状态冲突，暂停自动重发")
+    account_state[record_key] = entry
+    # Persist before pressing Enter, so a crash or a failed final write cannot
+    # turn an uncertain submission into an automatic resend on process restart.
+    _persist_delivery_state(state)
+    _unconfirmed_submissions.add(
+        (date.today().isoformat(), account_key, record_key)
+    )
 
 
 def _mark_target_sent_today(username, target):
@@ -766,10 +907,39 @@ def _mark_target_sent_today(username, target):
     state, day_state = _today_delivery_state(state)
     account_key = _delivery_state_key(username)
     account_state = day_state.setdefault(account_key, {})
-    account_state[_delivery_state_key(target)] = {
-        "sent_at": datetime.now(timezone.utc).isoformat(timespec="seconds")
-    }
+    target_key = _delivery_state_key(target)
+    today = date.today().isoformat()
+    # Finish the attempt captured before Enter, even if its nickname was
+    # reassigned or API mappings changed while submission was in progress.
+    active = [
+        key for key, entry in account_state.items()
+        if (today, account_key, key) in _unconfirmed_submissions
+        and _delivery_state_key(entry.get("target", key)) == target_key
+    ]
+    identity = _delivery_recipient_identity(target)
+    record_key = _delivery_recipient_key(target, identity)
+    matches = dict(_matching_delivery_entries(target, account_state))
+    if len(active) == 1:
+        record_key = active[0]
+    elif len(active) > 1:
+        raise DeliveryUncertainError(f"目标 {target} 存在多个待核验提交，拒绝批量确认")
+    elif record_key not in matches and matches:
+        if len(matches) != 1:
+            raise DeliveryUncertainError(f"目标 {target} 存在多个身份状态，拒绝批量确认")
+        record_key = next(iter(matches))
+    elif record_key in account_state and record_key not in matches:
+        raise DeliveryUncertainError(f"目标 {target} 的稳定身份与已有状态冲突")
+    entry = account_state.setdefault(record_key, {"target": target_key})
+    if identity and not entry.get("recipient_identity"):
+        entry["recipient_identity"] = identity
+    entry.update({
+        "status": "submitted",
+        "sent_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    })
     _persist_delivery_state(state)
+    _unconfirmed_submissions.discard(
+        (today, account_key, record_key)
+    )
 
 
 def _chat_input_is_search_like(candidate):
@@ -880,28 +1050,140 @@ def _find_chat_input(page):
     return None
 
 
+def _chat_submission_snapshot(page, message):
+    """Read a rendered-message baseline without treating a keypress as delivery.
+
+    This is a UI confirmation, not a server receipt. Missing or unrecognizable
+    UI leaves the durable attempt pending instead of authorizing another send.
+    """
+    return page.evaluate(
+        r"""({message, editorSelector, listSelector}) => {
+            const normalize = value => (value || '').normalize('NFKC')
+                .replace(/[\u200b\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+            const visible = element => {
+                const r = element.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
+            };
+            const list = document.querySelector(listSelector);
+            const paneStart = list ? list.getBoundingClientRect().right : innerWidth * 0.3;
+            const editor = [...document.querySelectorAll(editorSelector)].find(element =>
+                visible(element) && element.getBoundingClientRect().left >= paneStart - 40
+                && !/搜索/.test(['placeholder', 'aria-label', 'data-placeholder']
+                    .map(name => element.getAttribute(name) || '').join(' ')));
+            if (!editor) throw new Error('message editor unavailable');
+            const editorTop = editor.getBoundingClientRect().top;
+            const expected = normalize(message);
+            const renderedText = node => {
+                if (node.nodeType === 3) return node.textContent || '';
+                if (node.nodeName === 'BR') return '\n';
+                if (node.nodeName === 'IMG') {
+                    const label = node.getAttribute('alt') || node.getAttribute('title') || '';
+                    return label && !label.startsWith('[') ? `[${label}]` : label;
+                }
+                const value = [...node.childNodes].map(renderedText).join('');
+                return value + (/^(DIV|P|LI)$/.test(node.nodeName) ? '\n' : '');
+            };
+            const textOf = element => normalize(renderedText(element));
+            const nodes = [...document.querySelectorAll('div,span,p')].filter(element => {
+                if (!visible(element) || editor.contains(element) || element.contains(editor)) return false;
+                const r = element.getBoundingClientRect();
+                return r.left >= paneStart - 4 && r.bottom <= editorTop && r.top >= 0;
+            });
+            const matching = nodes.filter(element => textOf(element) === expected);
+            const leafMatches = matching.filter(element =>
+                !matching.some(other => other !== element && element.contains(other)));
+            const failures = nodes.filter(element => /^(发送失败|重新发送|未发送)$/.test(textOf(element)));
+            return {
+                editor_text: normalize(editor.value || renderedText(editor)),
+                message_count: leafMatches.length,
+                failure_count: failures.length,
+            };
+        }""",
+        {
+            "message": message,
+            "editorSelector": CHAT_INPUT_SELECTOR,
+            "listSelector": CONVERSATION_LIST_SELECTOR,
+        },
+    )
+
+
+def _wait_for_submission_confirmation(page, target, message, before, timeout):
+    deadline = time.monotonic() + max(1000, timeout) / 1000
+    observed_at = None
+    while time.monotonic() < deadline:
+        current = _chat_submission_snapshot(page, message)
+        if current["failure_count"] > before["failure_count"]:
+            raise DeliveryUncertainError("页面显示发送失败，需核对本次消息后再决定是否重试")
+        matched, _ = _chat_target_match(page, target)
+        if (
+            matched
+            and not current["editor_text"]
+            and current["message_count"] > before["message_count"]
+        ):
+            observed_at = time.monotonic() if observed_at is None else observed_at
+            if time.monotonic() - observed_at >= 1:
+                return
+        else:
+            observed_at = None
+        time.sleep(0.25)
+    raise DeliveryUncertainError("未确认输入框清空且当前聊天出现本次消息，已保留待核验状态")
+
+
 def _submit_chat_message(page, account_name, target, message=None, delivery_key=None):
     """Type and submit message into the currently confirmed chat editor."""
+    account_key = delivery_key or account_name
+    status = _target_delivery_statuses(
+        account_key, [target], aliases=(account_name,)
+    ).get(_delivery_state_key(target))
+    if status in {"sent", "submitted"}:
+        return target
+    if status == "pending":
+        raise DeliveryUncertainError(f"目标 {target} 存在待核验提交，暂停自动重发")
+    if not _chat_target_match(page, target)[0]:
+        raise RuntimeError(f"目标 {target} 的当前聊天身份未确认")
     chat_input = _wait_for_chat_input(page)
     if chat_input is None:
         raise RuntimeError("当前聊天没有可用的消息输入框")
     message = build_message() if message is None else str(message)
     lines = re.split(r"\\n|\r?\n", message)
+    rendered_message = "\n".join(lines)
+    if not _norm_value(rendered_message):
+        raise RuntimeError("本次消息为空，拒绝提交")
+    before = _chat_submission_snapshot(page, rendered_message)
+    if before["editor_text"]:
+        raise RuntimeError("消息输入框中已有草稿，拒绝追加本次消息")
+    send_timeout = max(1000, int(config.get("chatSendActionTimeout", 10000)))
     for index, line in enumerate(lines):
-        chat_input.type(line)
+        _locator_action(chat_input, "type", line, timeout=send_timeout)
         if index < len(lines) - 1:
-            chat_input.press("Shift+Enter")
+            _locator_action(chat_input, "press", "Shift+Enter", timeout=send_timeout)
 
+    prepared = _chat_submission_snapshot(page, rendered_message)
+    if prepared["editor_text"] != _norm_value(rendered_message):
+        raise RuntimeError("输入框内容与本次消息不一致，拒绝提交")
+    if not _chat_target_match(page, target)[0]:
+        raise RuntimeError(f"输入期间当前聊天已改变，拒绝向目标 {target} 提交")
     logger.debug(
         f"账号 {account_name} 准备发送消息给好友 {target}：\n\t{message}"
     )
-    send_timeout = max(
-        1000, int(config.get("chatSendActionTimeout", 10000))
-    )
-    _locator_action(chat_input, "press", "Enter", timeout=send_timeout)
-    time.sleep(2)
-    _mark_target_sent_today(delivery_key or account_name, target)
-    logger.debug(f"账号 {account_name} 给好友 {target} 发送消息完成")
+    _mark_target_pending_today(account_key, target, rendered_message)
+    try:
+        _locator_action(chat_input, "press", "Enter", timeout=send_timeout)
+        _wait_for_submission_confirmation(page, target, rendered_message, before, send_timeout)
+        # Retrying only the durable write is safe; never replay Enter here.
+        for attempt in range(3):
+            try:
+                _mark_target_sent_today(account_key, target)
+                break
+            except RuntimeError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.1)
+    except Exception as error:
+        raise DeliveryUncertainError(
+            f"目标 {target} 已尝试提交，结果待核验，暂停自动重发: {error}"
+        ) from error
+    logger.debug(f"账号 {account_name} 给好友 {target} 的消息已在页面显示（非服务端送达回执）")
     return target
 
 
@@ -946,6 +1228,9 @@ def _send_target_with_retries(
             return _send_message_to_target(
                 page, account_name, target, message, delivery_key
             )
+        except DeliveryUncertainError as error:
+            logger.error(f"账号 {account_name} 目标 {target} 待核验: {error}")
+            return None
         except Exception as error:
             logger.warning(
                 f"账号 {account_name} 发送目标 {target} 第 {attempt}/{retry_times} 次失败: {error}"
@@ -986,7 +1271,7 @@ def _chat_target_match(page, target):
     try:
         result = page.evaluate(
             """
-            ({ listSelector, editorSelector, terms }) => {
+            ({ listSelector, editorSelector, headerSelector, terms }) => {
                 const normalize = (value) => (value || '')
                     .normalize('NFKC')
                     .replace(/[\\u3000\\u00a0]/g, ' ')
@@ -1014,7 +1299,26 @@ def _chat_target_match(page, target):
                 const editorTop = editorRect ? editorRect.top : window.innerHeight;
                 const snippets = [];
 
-                for (const element of document.querySelectorAll('h1,h2,h3,div,span,a,button')) {
+                // Only an explicit chat header can establish identity. Text
+                // inside a message (including a quoted friend's name) cannot.
+                const headers = Array.from(document.querySelectorAll(headerSelector))
+                    .filter((header) => {
+                        const rect = header.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0
+                            && rect.left >= rightPaneStart - 4
+                            && rect.bottom <= editorTop
+                            && rect.height <= 160;
+                    });
+                const headerTop = Math.min(...headers.map(header => header.getBoundingClientRect().top));
+                const candidates = new Set();
+                for (const header of headers) {
+                    if (header.getBoundingClientRect().top > headerTop + 24) continue;
+                    candidates.add(header);
+                    for (const child of header.querySelectorAll('h1,h2,h3,div,span,a,button')) {
+                        candidates.add(child);
+                    }
+                }
+                for (const element of candidates) {
                     const rect = element.getBoundingClientRect();
                     if (!rect || rect.width <= 0 || rect.height <= 0) {
                         continue;
@@ -1027,7 +1331,7 @@ def _chat_target_match(page, target):
                     if (!text || text.length > 160) {
                         continue;
                     }
-                    if (normalizedTerms.some((term) => text.includes(term))) {
+                    if (normalizedTerms.some((term) => text === term)) {
                         snippets.push(text.slice(0, 160));
                         if (snippets.length >= 5) {
                             break;
@@ -1041,13 +1345,18 @@ def _chat_target_match(page, target):
             {
                 "listSelector": CONVERSATION_LIST_SELECTOR,
                 "editorSelector": CHAT_EDITOR_FALLBACK_SELECTOR,
+                "headerSelector": CHAT_HEADER_SELECTOR,
                 "terms": terms,
             },
         )
     except Exception:
         traceback.print_exc()
         return False, []
-    return bool(result.get("matched")), result.get("snippets", [])
+    snippets = result.get("snippets", [])
+    # Recheck candidates against the account-specific ID/alias rules. The DOM
+    # must not bypass rejection of an ambiguous nickname.
+    matched = any(checkTargetName(snippet, [target]) == _norm_value(target) for snippet in snippets)
+    return bool(result.get("matched")) and matched, snippets
 
 
 def wait_for_chat_editor(page, username, target, timeout=None):
@@ -1057,10 +1366,13 @@ def wait_for_chat_editor(page, username, target, timeout=None):
     except Exception as error:
         logger.warning(f"账号 {username} 选择好友 {target} 后聊天输入框未出现: {error}")
         return False
-    matched, snippets = _chat_target_match(page, target)
-    if matched:
-        logger.debug(f"账号 {username} 已确认当前聊天为 {target}: {snippets}")
-        return True
+    for attempt in range(max(1, int(timeout / 250))):
+        matched, snippets = _chat_target_match(page, target)
+        if matched:
+            logger.debug(f"账号 {username} 已确认当前聊天为 {target}: {snippets}")
+            return True
+        if attempt + 1 < max(1, int(timeout / 250)):
+            time.sleep(0.25)
     logger.warning(
         f"账号 {username} 选择好友 {target} 后当前聊天标题未匹配目标，"
         f"搜索词 {get_search_terms_for_target(target)}，可见候选 {snippets}"
@@ -1070,12 +1382,20 @@ def wait_for_chat_editor(page, username, target, timeout=None):
 
 def _locator_action(locator, action, *args, timeout=None):
     method = getattr(locator, action)
-    try:
-        if timeout is not None:
+    if timeout is not None:
+        try:
+            parameters = inspect.signature(method).parameters.values()
+            accepts_timeout = any(
+                parameter.name == "timeout" or parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+        except (TypeError, ValueError):
+            accepts_timeout = True
+        if accepts_timeout:
             return method(*args, timeout=timeout)
-        return method(*args)
-    except TypeError:
-        return method(*args)
+    # Decide compatibility before invoking an action. A TypeError raised after
+    # a keypress must propagate, not cause the keypress to run a second time.
+    return method(*args)
 
 
 def fill_search_input(search_input, value):
@@ -1484,7 +1804,10 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
             )
         except Exception as error:
             logger.warning(f"账号 {username} 代理抖音会话搜索接口失败: {error}")
-            route.continue_()
+            # The upstream request may already have been accepted, including a
+            # send-message POST. Replaying it via the browser after a timeout
+            # or fulfill failure can duplicate the submission.
+            route.abort("failed")
 
     page.route("https://imapi.douyin.com/**", proxy_conversation_api)
 
@@ -1517,27 +1840,40 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
             raise RuntimeError(f"账号 {account_name} 聊天页面未就绪")
         session_authenticated = True
 
-        completed = _completed_targets_for_today(
+        delivery_statuses = _target_delivery_statuses(
             delivery_account_key, all_targets, aliases=(account_name,)
         )
+        completed = {
+            target for target, status in delivery_statuses.items()
+            if status in {"sent", "submitted"}
+        }
+        uncertain_targets = {
+            target for target, status in delivery_statuses.items() if status == "pending"
+        }
         pending_targets = [
-            target for target in all_targets if _delivery_state_key(target) not in completed
+            target for target in all_targets
+            if _delivery_state_key(target) not in completed | uncertain_targets
         ]
+        if uncertain_targets:
+            logger.error(
+                f"账号 {account_name} 有 {len(uncertain_targets)} 个目标的提交结果待核验，"
+                f"暂停自动重发: {sorted(uncertain_targets)}"
+            )
         if completed:
             logger.info(
-                f"账号 {account_name} 今日已成功发送 {len(completed)} 个目标，跳过重复发送"
+                f"账号 {account_name} 今日已有 {len(completed)} 个目标的页面提交记录，跳过重复发送"
             )
-        if not pending_targets:
+        if not pending_targets and not uncertain_targets:
             logger.info(f"账号 {account_name} 今日目标已全部完成: {len(all_targets)}/{len(all_targets)}")
             return
 
         logger.debug(
             f"账号 {account_name} 开始发送消息，本次待处理 {len(pending_targets)}/{len(all_targets)} 个目标"
         )
-        sent_count = 0
-        failed_targets = []
-        message = build_message()
-        for target in scroll_and_select_user(page, account_name, pending_targets):
+        completed_targets = set(completed)
+        message = build_message() if pending_targets else ""
+        selections = scroll_and_select_user(page, account_name, pending_targets) if pending_targets else ()
+        for target in selections:
             delivered = _send_target_with_retries(
                 page,
                 account_name,
@@ -1546,20 +1882,33 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
                 delivery_account_key,
             )
             if delivered:
-                sent_count += 1
-            else:
-                failed_targets.append(target)
+                completed_targets.add(_delivery_state_key(target))
 
-        completed_count = len(all_targets) - len(pending_targets) + sent_count
+        # Mapping may arrive while traversing the virtual list. Count an alias
+        # of a completed identity without submitting to that person again.
+        final_statuses = _target_delivery_statuses(
+            delivery_account_key, all_targets, aliases=(account_name,)
+        )
+        completed_targets.update(
+            target for target, status in final_statuses.items()
+            if status in {"sent", "submitted"}
+        )
+        completed_targets.difference_update(
+            target for target, status in final_statuses.items() if status == "pending"
+        )
+        completed_count = len(completed_targets)
+        failed_targets = [
+            target for target in all_targets if _delivery_state_key(target) not in completed_targets
+        ]
         missing_count = len(all_targets) - completed_count
         if missing_count:
             logger.warning(f"账号 {account_name} 本次有目标未完成: {failed_targets}")
             raise RuntimeError(
                 f"账号 {account_name} 未完成全部发送: {completed_count}/{len(all_targets)}；"
-                "本次任务标记为失败，下一次运行将从未完成目标继续"
+                "本次任务标记为失败；未提交目标可重试，待核验提交须先检查聊天记录"
             )
         logger.info(
-            f"账号 {account_name} 本次发送完成: {completed_count}/{len(all_targets)} 个目标"
+            f"账号 {account_name} 本次完成页面提交: {completed_count}/{len(all_targets)} 个目标"
         )
     finally:
         try:

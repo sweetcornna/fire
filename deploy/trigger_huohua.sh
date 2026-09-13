@@ -17,7 +17,7 @@ LOG_FILE="${HUOHUA_TRIGGER_LOG:-/root/fire_trigger.log}"
 LOCK_FILE="${HUOHUA_TRIGGER_LOCK:-/var/lock/fire-trigger.lock}"
 REPOSITORY="${HUOHUA_GITHUB_REPOSITORY:-sweetcornna/fire}"
 WORKFLOW="${HUOHUA_GITHUB_WORKFLOW:-schedule.yml}"
-REF="${HUOHUA_GITHUB_REF:-main}"
+REF="${HUOHUA_GITHUB_REF:-}"
 WAIT_SECONDS="${HUOHUA_WAIT_SECONDS:-2700}"
 POLL_SECONDS="${HUOHUA_POLL_SECONDS:-15}"
 DISPATCH_ATTEMPTS="${HUOHUA_DISPATCH_ATTEMPTS:-3}"
@@ -68,6 +68,29 @@ fi
 
 response_file="$(mktemp)"
 trap 'rm -f "$response_file"' EXIT
+
+# Cache access follows the dispatch branch, not actions/checkout's dev ref.
+# Resolve the repository default so both delivery workflows use the same scope.
+repository_code="$(curl --fail-with-body --silent --show-error --retry 3 --retry-delay 5 \
+  --output "$response_file" --write-out "%{http_code}" \
+  -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer $token" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  "https://api.github.com/repos/${REPOSITORY}")" || true
+if [[ "$repository_code" != "200" ]]; then
+  echo "Cannot determine repository default branch: HTTP=${repository_code:-curl-error}" >&2
+  exit 1
+fi
+if ! default_ref="$(jq -er '.default_branch | select(type == "string" and length > 0)' "$response_file")"; then
+  echo "Repository response has no valid default_branch; refusing workflow dispatch" >&2
+  exit 65
+fi
+if [[ -n "$REF" && "${REF#refs/heads/}" != "$default_ref" ]]; then
+  echo "HUOHUA_GITHUB_REF must be the repository default branch ($default_ref); refusing ref=$REF" >&2
+  exit 64
+fi
+REF="$default_ref"
+
 now="$(date -Is)"
 dispatch_epoch="$(date +%s)"
 endpoint="https://api.github.com/repos/${REPOSITORY}/actions/workflows/${WORKFLOW}/dispatches"
