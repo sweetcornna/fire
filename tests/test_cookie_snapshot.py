@@ -1,0 +1,62 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from utils import cookie_snapshot
+
+
+def cookie(name, value="v", domain=".douyin.com"):
+    return {"name": name, "value": value, "domain": domain}
+
+
+class CookieSnapshotTests(unittest.TestCase):
+    def write(self, payload):
+        directory = tempfile.mkdtemp()
+        path = Path(directory) / "cookies.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return str(path)
+
+    def test_snapshot_with_a_session_cookie_is_accepted(self):
+        path = self.write([cookie("sessionid"), cookie("ttwid")])
+
+        self.assertEqual(cookie_snapshot.main([path]), 0)
+
+    def test_snapshot_without_any_login_cookie_is_refused(self):
+        with self.assertRaises(SystemExit) as refused:
+            cookie_snapshot.validate([cookie("ttwid"), cookie("msToken")])
+
+        self.assertIn("登录态", str(refused.exception))
+
+    def test_empty_or_malformed_snapshot_is_refused(self):
+        for payload in ([], {}, [cookie("sessionid", value="")], ["sessionid"]):
+            with self.assertRaises(SystemExit):
+                cookie_snapshot.validate(payload)
+
+    def test_missing_file_is_refused_without_a_traceback(self):
+        with self.assertRaises(SystemExit):
+            cookie_snapshot.load_snapshot("/nonexistent/cookies.json")
+
+    def test_validation_never_echoes_a_cookie_value(self):
+        secret = "sid-guard-secret-value"
+        with self.assertRaises(SystemExit) as refused:
+            cookie_snapshot.validate([{"name": "sid_guard", "value": secret}])
+
+        self.assertNotIn(secret, str(refused.exception))
+
+
+class SessionFingerprintTests(unittest.TestCase):
+    def test_rotation_is_visible_without_exposing_the_session(self):
+        import core.tasks as tasks
+
+        before = tasks._cookie_fingerprint([cookie("sid_guard", "old"), cookie("ttwid", "x")])
+        after = tasks._cookie_fingerprint([cookie("sid_guard", "new")])
+
+        self.assertEqual(list(before), ["sid_guard"])  # only login cookies count
+        self.assertNotEqual(before["sid_guard"], after["sid_guard"])
+        self.assertEqual(len(before["sid_guard"]), 8)
+        self.assertNotIn("old", json.dumps(before))
+
+
+if __name__ == "__main__":
+    unittest.main()

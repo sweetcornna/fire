@@ -91,7 +91,29 @@ jobs:
         HEADLESS: "1"
         DELIVERY_STATE_FILE: .state/delivery-state.json
         REQUIRE_ALL_TARGETS: "1"
+        HUOHUA_COOKIE_PERSIST_FILE: .state/cookies.json
       run: python main.py
+    - name: Persist refreshed Douyin session
+      # Douyin rotates the login cookie during a run; without writing the
+      # refreshed jar back, the next run starts from an invalidated session.
+      if: ${{ always() && inputs.preview_only != true }}
+      env:
+        GH_TOKEN: ${{ secrets.COOKIE_WRITE_TOKEN }}
+        COOKIE_SNAPSHOT: .state/cookies.json
+        COOKIE_SECRET_NAME: COOKIES_33217367887
+      run: |
+        if [ -z "${GH_TOKEN:-}" ]; then
+          echo "::notice::未配置 COOKIE_WRITE_TOKEN，跳过会话回写"
+          exit 0
+        fi
+        if [ ! -s "$COOKIE_SNAPSHOT" ]; then
+          echo "::notice::本次运行没有产生可回写的会话快照"
+          exit 0
+        fi
+        python utils/cookie_snapshot.py "$COOKIE_SNAPSHOT"
+        gh secret set "$COOKIE_SECRET_NAME" --env user-data \
+          --repo "$GITHUB_REPOSITORY" < "$COOKIE_SNAPSHOT"
+        echo "已回写刷新后的抖音会话到 $COOKIE_SECRET_NAME"
     - uses: actions/cache/save@v4
       if: ${{ always() && steps.delivery-date.outputs.today != '' && hashFiles('.state/delivery-state.json') != '' }}
       with:

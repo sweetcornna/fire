@@ -201,6 +201,32 @@ class WorkflowDeliveryScopeTests(unittest.TestCase):
                 paths = textwrap.dedent(artifact.split("        path: |\n", 1)[1])
                 self.assertEqual(set(paths.split()), {"logs/", ".state/delivery-state.json"})
 
+    def test_refreshed_session_is_written_back_without_leaking_it(self):
+        for filename in ("schedule.yml", "schedule_dev.yml"):
+            with self.subTest(workflow=filename):
+                source = (ROOT / ".github" / "workflows" / filename).read_text()
+                self.assertIn("HUOHUA_COOKIE_PERSIST_FILE: .state/cookies.json", source)
+
+                marker = "    - name: Persist refreshed Douyin session\n"
+                self.assertIn(marker, source)
+                self.assertLess(source.index("      run: python main.py"), source.index(marker))
+                self.assertLess(source.index(marker), source.index("    - uses: actions/upload-artifact@v4"))
+
+                block = source.split(marker, 1)[1].split("\n    - ", 1)[0]
+                self.assertIn("always()", block)
+                self.assertIn("GH_TOKEN: ${{ secrets.COOKIE_WRITE_TOKEN }}", block)
+                # A missing token or snapshot must skip, never fail the run.
+                self.assertIn('if [ -z "${GH_TOKEN:-}" ]; then', block)
+                self.assertIn('if [ ! -s "$COOKIE_SNAPSHOT" ]; then', block)
+                # The snapshot is validated before it can replace a working secret.
+                self.assertLess(
+                    block.index("python utils/cookie_snapshot.py"),
+                    block.index("gh secret set"),
+                )
+                # Nothing may print the jar itself into a public run log.
+                for leak in ("cat ", "echo $COOKIE", "${{ secrets.COOKIES"):
+                    self.assertNotIn(leak, block)
+
     def test_delivery_cache_namespace_is_shared(self):
         cache_settings = []
         for filename in ("schedule.yml", "schedule_dev.yml"):

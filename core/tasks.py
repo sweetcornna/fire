@@ -58,6 +58,7 @@ SEARCH_INPUT_SELECTORS = (
     '[contains(@placeholder, "搜索") or contains(@aria-label, "搜索") '
     'or contains(@data-placeholder, "搜索")]',
 )
+SESSION_COOKIE_NAMES = ("sessionid", "sessionid_ss", "sid_guard", "passport_csrf_token")
 USER_NUMBER_TARGET_RE = re.compile(r"^用户(\d+)$")
 # Douyin keeps showing a conversation id until it fetches that profile.
 PLACEHOLDER_TITLE_RE = re.compile(r"^\d{5,}$")
@@ -1099,6 +1100,30 @@ def _persist_delivery_state(state):
                 os.unlink(temp_name)
     except OSError as error:
         raise RuntimeError(f"续火状态文件写入失败: {path}: {error}") from error
+
+
+def _cookie_fingerprint(cookies):
+    """Fingerprint the login cookies so rotation is visible in a shared log.
+
+    Only a truncated digest is kept: the log artifact of a public repository
+    must never carry the session value itself.
+    """
+    summary = {}
+    try:
+        entries = list(cookies or [])
+    except TypeError:
+        return summary
+    for cookie in entries:
+        if not isinstance(cookie, dict):
+            continue
+        name = _norm_value(cookie.get("name"))
+        if name not in SESSION_COOKIE_NAMES:
+            continue
+        value = str(cookie.get("value", ""))
+        summary[name] = (
+            hashlib.sha256(value.encode("utf-8")).hexdigest()[:8] if value else ""
+        )
+    return summary
 
 
 def _persist_cookie_snapshot(cookies, account_key=None):
@@ -2328,6 +2353,8 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
 
     # 注入 Cookie
     context.add_cookies(cookies)
+    injected_fingerprint = _cookie_fingerprint(cookies)
+    logger.info(f"账号 {account_name} 注入的会话指纹: {injected_fingerprint}")
 
     try:
         if config.get("diagnoseUserSearch"):
@@ -2430,7 +2457,17 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
     finally:
         try:
             if session_authenticated:
-                _persist_cookie_snapshot(context.cookies(), delivery_account_key)
+                final_cookies = context.cookies()
+                final_fingerprint = _cookie_fingerprint(final_cookies)
+                rotated = sorted(
+                    name for name, digest in final_fingerprint.items()
+                    if injected_fingerprint.get(name) != digest
+                )
+                logger.info(
+                    f"账号 {account_name} 结束时的会话指纹: {final_fingerprint}，"
+                    + (f"本次轮换: {rotated}" if rotated else "本次未轮换")
+                )
+                _persist_cookie_snapshot(final_cookies, delivery_account_key)
         finally:
             context.close()
 
