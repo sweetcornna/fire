@@ -616,8 +616,9 @@ def wait_for_chat_ready(page, username, timeout=None):
 
     Douyin's chat bundle can take several seconds to hydrate on the fixed
     production host.  A single fixed sleep caused valid sessions to be
-    rejected before the search input existed.  Poll for either the search box
-    or a rendered conversation list, while failing quickly on a login page.
+    rejected before the search input existed. The login prompt can also appear
+    briefly before the session hydrates. Require it to disappear before using
+    the chat shell, and classify persistent login failure only at the deadline.
     """
     timeout = timeout or int(
         os.getenv("CHAT_READY_TIMEOUT", str(DEFAULT_CHAT_READY_TIMEOUT_MS))
@@ -625,20 +626,21 @@ def wait_for_chat_ready(page, username, timeout=None):
     deadline = time.monotonic() + max(1000, timeout) / 1000
     while time.monotonic() < deadline:
         _dismiss_login_prompt(page, username)
-        if _logged_out(page):
-            state = _page_state(page)
-            raise RuntimeError(
-                f"账号 {username} Cookie 已失效，抖音返回登录页；页面状态: {state}"
-            )
-        try:
-            if find_search_input(page):
-                return True
-            if page.locator(CONVERSATION_ITEM_SELECTOR).count() > 0:
-                return True
-        except Exception:
-            pass
+        if not _logged_out(page):
+            try:
+                if find_search_input(page):
+                    return True
+                if page.locator(CONVERSATION_ITEM_SELECTOR).count() > 0:
+                    return True
+            except Exception:
+                pass
         time.sleep(0.5)
 
+    if _logged_out(page):
+        raise RuntimeError(
+            f"账号 {username} 聊天页面在 {timeout}ms 后仍显示登录页，"
+            f"请检查登录状态；页面状态: {_page_state(page)}"
+        )
     logger.warning(
         f"账号 {username} 聊天页面在 {timeout}ms 内未就绪；页面状态: {_page_state(page)}"
     )

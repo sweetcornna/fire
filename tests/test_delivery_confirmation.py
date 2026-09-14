@@ -321,6 +321,22 @@ class ChatDomConfirmationTests(unittest.TestCase):
         self.assertTrue(tasks._chat_target_match(self.page, "乙")[0])
         self.assertFalse(tasks._chat_target_match(self.page, "甲")[0])
 
+    def test_readiness_waits_for_the_transient_login_overlay_to_disappear(self):
+        self.page.evaluate('''() => {
+            const overlay = document.createElement('article');
+            overlay.id = 'login-overlay';
+            overlay.textContent = '扫码登录';
+            document.body.prepend(overlay);
+            setTimeout(() => {
+                overlay.remove();
+                const search = document.createElement('input');
+                search.placeholder = '搜索';
+                document.body.prepend(search);
+            }, 100);
+        }''')
+        self.assertTrue(tasks.wait_for_chat_ready(self.page, "账号", timeout=2000))
+        self.assertEqual(self.page.locator('#login-overlay').count(), 0)
+
     def test_preload_visits_lazy_names_before_returning_to_the_list_top(self):
         self.page.locator(tasks.CONVERSATION_LIST_SELECTOR).evaluate('''element => {
             element.style.height = '120px';
