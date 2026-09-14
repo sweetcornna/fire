@@ -1449,7 +1449,16 @@ def _chat_target_match(page, target):
                     if (!text || text.length > 160) {
                         continue;
                     }
-                    if (normalizedTerms.some((term) => text === term)) {
+                    const cleanText = text.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[☀-⟿️]/g, '').trim();
+                    const baseText = text.replace(/[\(（].*$/, '').trim();
+                    if (
+                        normalizedTerms.some((term) => text === term)
+                        || normalizedTerms.some((term) => {
+                            const cleanTerm = term.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[☀-⟿️]/g, '').trim();
+                            return (cleanText && (cleanText === cleanTerm || cleanText === term))
+                                || (baseText && (baseText === cleanTerm || baseText === term));
+                        })
+                    ) {
                         snippets.push(text.slice(0, 160));
                         if (snippets.length >= 5) {
                             break;
