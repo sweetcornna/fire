@@ -2,6 +2,11 @@ name: DouYin Spark Flow Schedule Run
 on:
   workflow_dispatch: # 允许手动触发
     inputs:
+      diagnose_only:
+        description: "仅检查线上好友匹配，不输入或发送消息"
+        required: false
+        default: false
+        type: boolean
       preview_only:
         description: "只生成预览，不登录抖音、不发送"
         required: false
@@ -71,6 +76,7 @@ jobs:
       env:
         PREVIEW_ONLY: ${{ inputs.preview_only || 'false' }}
         AI_PREVIEW_COUNT: ${{ inputs.preview_count || '5' }}
+        DIAGNOSE_FRIEND_MATCHING: ${{ inputs.diagnose_only && '1' || vars.DIAGNOSE_FRIEND_MATCHING || '0' }}
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         COOKIES_33217367887: ${{ secrets.COOKIES_33217367887 }}
         BROWSER_TIMEOUT: "60000"

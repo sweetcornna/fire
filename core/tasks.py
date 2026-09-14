@@ -1144,6 +1144,14 @@ def _submit_chat_message(page, account_name, target, message=None, delivery_key=
     chat_input = _wait_for_chat_input(page)
     if chat_input is None:
         raise RuntimeError("当前聊天没有可用的消息输入框")
+    # The placeholder may disappear after the first typed character. Keep the
+    # selected node for this transaction instead of resolving that selector on
+    # every Shift+Enter/Enter. A replaced node fails rather than targeting a
+    # different editor.
+    if callable(getattr(chat_input, "element_handle", None)):
+        chat_input = _element_handle_with_timeout(chat_input, FALLBACK_ELEMENT_TIMEOUT_MS)
+        if chat_input is None:
+            raise RuntimeError("当前消息输入框已失效")
     message = build_message() if message is None else str(message)
     lines = re.split(r"\\n|\r?\n", message)
     rendered_message = "\n".join(lines)
@@ -1412,20 +1420,29 @@ def fill_search_input(search_input, value):
         pass
 
 
+def _click_chat_candidate(candidate):
+    timeout = min(
+        DEFAULT_SEARCH_ACTION_TIMEOUT_MS,
+        max(1, int(config.get("chatSearchActionTimeout", DEFAULT_SEARCH_ACTION_TIMEOUT_MS))),
+    )
+    return _locator_action(candidate, "click", timeout=timeout)
+
+
 def click_matching_visible_user(page, username, targets):
     for element in page.locator(CONVERSATION_ITEM_SELECTOR).all():
         try:
             if hasattr(element, "is_visible") and not element.is_visible():
                 continue
             targetName = _norm_value(
-                element.locator(CONVERSATION_TITLE_SELECTOR).inner_text()
+                _locator_action(element.locator(CONVERSATION_TITLE_SELECTOR), "inner_text",
+                                timeout=FALLBACK_ELEMENT_TIMEOUT_MS)
             )
             if not targetName:
                 continue
             logger.debug(f"账号 {username} 搜索结果好友 {targetName}")
             targetSymbol = checkTargetName(targetName, targets)
             if targetSymbol:
-                element.click()
+                _click_chat_candidate(element)
                 if wait_for_chat_editor(page, username, targetSymbol):
                     return targetSymbol
         except Exception:
@@ -1453,7 +1470,7 @@ def click_visible_text_result(page, username, target, terms):
                 logger.debug(
                     f"账号 {username} 点击搜索文本结果 {term} 以选择目标好友 {target}"
                 )
-                candidate.click()
+                _click_chat_candidate(candidate)
                 if wait_for_chat_editor(page, username, target):
                     return target
             except Exception:
@@ -1589,6 +1606,7 @@ def scroll_and_select_user(page, username, targets):
     logger.debug(f"账号 {username} 目标好友列表: {targets}")
 
     found_targets = set()
+    failed_selections = set()
     # [修改] 复制一份目标列表用于追踪进度
     remaining_targets = set(targets)
 
@@ -1604,10 +1622,13 @@ def scroll_and_select_user(page, username, targets):
         prev_found_count = len(found_targets)
 
         for element in target_elements:
+            targetSymbol = None
             try:
+                if hasattr(element, "is_visible") and not element.is_visible():
+                    continue
                 # 查找子元素 span，模糊匹配 class
                 span = element.locator(CONVERSATION_TITLE_SELECTOR)
-                targetName = span.inner_text()
+                targetName = _locator_action(span, "inner_text", timeout=FALLBACK_ELEMENT_TIMEOUT_MS)
 
                 if targetName not in found_targets:
                     found_targets.add(targetName)
@@ -1615,8 +1636,8 @@ def scroll_and_select_user(page, username, targets):
                 
                 targetSymbol = checkTargetName(targetName, remaining_targets)
 
-                if targetSymbol:
-                    element.click()
+                if targetSymbol and targetSymbol not in failed_selections:
+                    _click_chat_candidate(element)
                     if wait_for_chat_editor(page, username, targetSymbol):
                         yield targetSymbol
 
@@ -1627,8 +1648,11 @@ def scroll_and_select_user(page, username, targets):
                             logger.debug(f"账号 {username} 所有目标好友均已找到，停止搜索")
                             return
                         break
+                    failed_selections.add(targetSymbol)
                     continue
             except Exception as e:
+                if targetSymbol:
+                    failed_selections.add(targetSymbol)
                 traceback.print_exc()
         else:
             # [修复] 检查本轮是否有新好友被发现

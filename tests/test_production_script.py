@@ -174,6 +174,14 @@ class TriggerScriptTests(unittest.TestCase):
 
 
 class WorkflowDeliveryScopeTests(unittest.TestCase):
+    def test_diagnostic_input_selects_existing_non_sending_path(self):
+        for filename in ("schedule.yml", "schedule_dev.yml"):
+            source = (ROOT / ".github" / "workflows" / filename).read_text()
+            diagnostic = source.split("      diagnose_only:\n", 1)[1].split("      preview_only:", 1)[0]
+            self.assertIn("default: false", diagnostic)
+            self.assertIn("type: boolean", diagnostic)
+            self.assertIn("DIAGNOSE_FRIEND_MATCHING: ${{ inputs.diagnose_only && '1' || vars.DIAGNOSE_FRIEND_MATCHING || '0' }}", source)
+
     def test_interrupted_runs_attempt_state_save_and_artifact_backup(self):
         for filename in ("schedule.yml", "schedule_dev.yml"):
             with self.subTest(workflow=filename):

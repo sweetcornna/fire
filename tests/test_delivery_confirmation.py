@@ -21,7 +21,7 @@ class DeliveryConfirmationTests(unittest.TestCase):
         self.stack.enter_context(patch.object(tasks, "build_message", return_value="消息"))
         self.stack.enter_context(patch.object(tasks.time, "sleep"))
         self.stack.enter_context(patch.object(tasks, "_dismiss_login_prompt", return_value=False))
-        self.input = Mock()
+        self.input = Mock(spec=["type", "press"])
         self.stack.enter_context(patch.object(tasks, "_chat_target_match", return_value=(True, ["好友"])))
         self.stack.enter_context(patch.object(tasks, "_wait_for_chat_input", return_value=self.input))
         self.snapshot = self.stack.enter_context(patch.object(
@@ -341,6 +341,58 @@ class ChatDomConfirmationTests(unittest.TestCase):
             self.assertEqual(self.page.evaluate("window.submissions"), 1)
             self.assertEqual(tasks._completed_targets_for_today("account", ["乙"]), set())
             reset.assert_not_called()
+
+    def test_multiline_submit_survives_placeholder_removal_on_input(self):
+        self.page.evaluate('''() => {
+            const editor = document.querySelector('#editor');
+            editor.className = 'messageEditorimChatEditorContainer';
+            editor.addEventListener('input', () => editor.removeAttribute('data-placeholder'));
+            window.submissions = 0;
+            editor.addEventListener('keydown', event => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    window.submissions++;
+                    const p = document.createElement('p');
+                    p.textContent = editor.innerText;
+                    document.querySelector('#messages').append(p);
+                    editor.textContent = '';
+                }
+            });
+        }''')
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            "DELIVERY_STATE_FILE": str(Path(directory) / "state.json")
+        }), patch.object(tasks, "_unconfirmed_submissions", set()), patch.dict(
+            tasks.config, {"chatSendActionTimeout": 2000}
+        ):
+            self.assertEqual(tasks._submit_chat_message(self.page, "账号", "乙", "甲\n乙", "account"), "乙")
+            self.assertEqual(self.page.evaluate("window.submissions"), 1)
+            self.assertEqual(tasks._target_delivery_statuses("account", ["乙"]), {"乙": "submitted"})
+
+    def test_hidden_conversation_is_never_clicked_during_scroll(self):
+        from playwright.sync_api import Locator
+        self.page.locator('.conversationConversationListwrapper').evaluate('''element => {
+            element.innerHTML = '<div class="conversationConversationItemwrapper" style="display:none">'
+                + '<span class="conversationConversationItemtitle">乙</span></div>';
+        }''')
+        with patch.object(Locator, "click", side_effect=RuntimeError("hidden conversation clicked")) as click, \
+             patch.object(tasks.time, "sleep"), \
+             patch.object(tasks, "search_remaining_targets", return_value=iter(())):
+            self.assertEqual(list(tasks.scroll_and_select_user(self.page, "账号", ["乙"])), [])
+        click.assert_not_called()
+
+    def test_failed_conversation_click_is_bounded_and_not_replayed_in_the_list(self):
+        from playwright.sync_api import Locator
+        self.page.locator('.conversationConversationListwrapper').evaluate('''element => {
+            element.innerHTML = '<div class="conversationConversationItemwrapper">'
+                + '<span class="conversationConversationItemtitle">乙</span></div>';
+        }''')
+        with patch.object(Locator, "click", side_effect=RuntimeError("conversation became detached")) as click, \
+             patch.object(tasks.time, "sleep"), \
+             patch.object(tasks.traceback, "print_exc"), \
+             patch.object(tasks, "search_remaining_targets", return_value=iter(())):
+            self.assertEqual(list(tasks.scroll_and_select_user(self.page, "账号", ["乙"])), [])
+        self.assertEqual(click.call_count, 1)
+        self.assertLessEqual(click.call_args.kwargs["timeout"], 5000)
 
 
 if __name__ == "__main__":
