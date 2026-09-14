@@ -57,6 +57,7 @@ SEARCH_INPUT_SELECTORS = (
     'or contains(@data-placeholder, "搜索")]',
 )
 USER_NUMBER_TARGET_RE = re.compile(r"^用户(\d+)$")
+EMOJI_PATTERN = re.compile(r"[\U00010000-\U0010ffff☀-⟿️]")
 MAX_USER_SEARCH_SNIPPETS = 40
 MAX_EMPTY_SCROLLS = 10
 DEFAULT_SEARCH_ACTION_TIMEOUT_MS = 5000
@@ -519,13 +520,47 @@ def retry_operation(name, operation, retries=3, delay=2, *args, **kwargs):
                 raise
 
 def checkTargetName(targetName, targets):
-    """Match only exact, unambiguous target aliases."""
+    """Match only exact, unambiguous target aliases or safe emoji/bracket-free variants."""
     targetName = _norm_value(targetName)
     if not targetName:
         return None
-    for target in targets:
+
+    # Filter out ambiguous targets whose alias cannot be uniquely resolved
+    valid_targets = [
+        target for target in targets
+        if get_search_terms_for_target(target)
+    ]
+    if not valid_targets:
+        return None
+
+    # 1. Exact match via search terms
+    for target in valid_targets:
         if targetName in get_search_terms_for_target(target):
             return _norm_value(target)
+
+    # 2. Match without trailing/contained emojis (unambiguous candidate only)
+    stripped_name = EMOJI_PATTERN.sub("", targetName).strip()
+    if stripped_name:
+        candidates = []
+        for target in valid_targets:
+            target_norm = _norm_value(target)
+            stripped_target = EMOJI_PATTERN.sub("", target_norm).strip()
+            if stripped_name != targetName and (stripped_name == stripped_target or stripped_name == target_norm):
+                candidates.append(target_norm)
+        if len(candidates) == 1:
+            return candidates[0]
+
+    # 3. Match prefix before bracket notes like (xxx or （xxx
+    base_name = re.sub(r"[\(（].*$", "", targetName).strip()
+    if base_name and len(base_name) >= 2:
+        candidates = []
+        for target in valid_targets:
+            target_norm = _norm_value(target)
+            if base_name != targetName and (base_name == target_norm or base_name == EMOJI_PATTERN.sub("", target_norm).strip()):
+                candidates.append(target_norm)
+        if len(candidates) == 1:
+            return candidates[0]
+
     return None
 
 

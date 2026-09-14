@@ -228,10 +228,11 @@ class WorkflowDeliveryScopeTests(unittest.TestCase):
             self.assertIn("DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}", block)
             self.assertIn("PREVIEW_ONLY: ${{ inputs.preview_only || 'false' }}", block)
             command = textwrap.dedent(block.split("      run: |\n", 1)[1])
+            is_dev_workflow = filename == "schedule_dev.yml"
             cases = (
                 ("false", "refs/heads/main", "main", True),
                 ("false", "refs/heads/trunk", "trunk", True),
-                ("false", "refs/heads/dev", "main", False),
+                ("false", "refs/heads/dev", "main", is_dev_workflow),
                 ("false", "refs/tags/main", "main", False),
                 ("false", "refs/heads/main", "", False),
                 ("true", "refs/heads/dev", "main", True),

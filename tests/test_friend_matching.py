@@ -488,6 +488,8 @@ class FriendMatchingTests(unittest.TestCase):
 
     def test_alias_unmapped_names_still_require_normalized_exact_match(self):
         self.assertEqual(tasks.checkTargetName(" 甲\u3000", ["甲"]), "甲")
+        self.assertEqual(tasks.checkTargetName("匿名信🧊", ["匿名信"]), "匿名信")
+        self.assertEqual(tasks.checkTargetName("犬系晓冰(尤铭译", ["犬系晓冰"]), "犬系晓冰")
         self.assertIsNone(tasks.checkTargetName("甲乙", ["甲"]))
         self.assertIsNone(tasks.checkTargetName("", [""]))
         self.assertEqual(tasks.get_search_terms_for_target("\u200b"), [])
