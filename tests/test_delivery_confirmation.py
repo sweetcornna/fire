@@ -292,6 +292,16 @@ class ChatDomConfirmationTests(unittest.TestCase):
         self.assertFalse(tasks._chat_target_match(self.page, "甲")[0])
         self.assertTrue(tasks._chat_target_match(self.page, "甲乙")[0])
 
+    def test_observed_right_panel_header_is_recognized_without_using_message_text(self):
+        self.page.locator('header').evaluate('''element => {
+            element.outerHTML = '<div class="RightPanelHeadersummatyBox" '
+                + 'style="position:absolute;left:366px;top:19px;width:500px;height:45px">'
+                + '<div class="RightPanelHeadertitleContainer">'
+                + '<div class="RightPanelHeadertitle">乙</div><span>69</span></div></div>';
+        }''')
+        self.assertTrue(tasks._chat_target_match(self.page, "乙")[0])
+        self.assertFalse(tasks._chat_target_match(self.page, "甲")[0])
+
     def test_existing_message_and_cleared_input_are_not_a_new_submission(self):
         before = tasks._chat_submission_snapshot(self.page, "今天遇到了甲")
         self.assertEqual(before["message_count"], 1)

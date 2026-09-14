@@ -67,7 +67,7 @@ DEFAULT_SEARCH_RESULT_WAIT_SECONDS = 4
 DEFAULT_CHAT_READY_TIMEOUT_MS = 30000
 CHAT_PAGE_URL = "https://www.douyin.com/chat"
 CHAT_HEADER_SELECTOR = (
-    '[class*="chatHeader"], [class*="ChatHeader"], [class*="chat-header"], '
+    '.RightPanelHeadertitle, [class*="chatHeader"], [class*="ChatHeader"], [class*="chat-header"], '
     '[class*="messageHeader"], header, [role="heading"]'
 )
 _unconfirmed_submissions = set()
