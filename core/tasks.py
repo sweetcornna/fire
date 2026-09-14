@@ -278,7 +278,8 @@ def collect_friend_titles(page, username):
                 if hasattr(element, "is_visible") and not element.is_visible():
                     continue
                 targetName = _norm_value(
-                    element.locator(CONVERSATION_TITLE_SELECTOR).inner_text()
+                    _locator_action(element.locator(CONVERSATION_TITLE_SELECTOR), "inner_text",
+                                    timeout=FALLBACK_ELEMENT_TIMEOUT_MS)
                 )
                 if targetName and targetName not in found_set:
                     found_set.add(targetName)
@@ -299,7 +300,12 @@ def collect_friend_titles(page, username):
             )
             return found_titles
 
-        scrollable_element = page.locator(CONVERSATION_LIST_SELECTOR).element_handle()
+        try:
+            scrollable_element = _element_handle_with_timeout(
+                page.locator(CONVERSATION_LIST_SELECTOR), FALLBACK_ELEMENT_TIMEOUT_MS
+            )
+        except Exception:
+            scrollable_element = None
         if not scrollable_element:
             logger.error(f"账号 {username} 匹配诊断未找到滚动容器，退出")
             return found_titles
@@ -324,6 +330,24 @@ def collect_friend_titles(page, username):
                 f"账号 {username} 匹配诊断滚动好友列表 (scrollTop: {scroll_top_before} -> {scroll_top_after})"
             )
         time.sleep(1.5)
+
+
+def _preload_friend_list(page, username):
+    """Load profile names before message activity starts reordering the list."""
+    titles = collect_friend_titles(page, username)
+    try:
+        scrollable = _element_handle_with_timeout(
+            page.locator(CONVERSATION_LIST_SELECTOR), FALLBACK_ELEMENT_TIMEOUT_MS
+        )
+        if scrollable is not None:
+            page.evaluate("element => { element.scrollTop = 0; }", scrollable)
+    except Exception as error:
+        logger.warning(f"账号 {username} 预加载后复位好友列表失败: {error}")
+    logger.info(
+        f"账号 {username} 发送前列表预加载完成: {len(titles)} 个标题，"
+        f"其中纯数字标题 {sum(title.isdigit() for title in titles)} 个"
+    )
+    return titles
 
 
 def diagnose_friend_matching(page, username, targets):
@@ -1912,6 +1936,10 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
         if not wait_for_chat_ready(page, account_name):
             raise RuntimeError(f"账号 {account_name} 聊天页面未就绪")
         session_authenticated = True
+
+        # Fetch names before the first submission: the live IM client may leave
+        # off-screen contacts as numeric placeholders during message activity.
+        _preload_friend_list(page, account_name)
 
         delivery_statuses = _target_delivery_statuses(
             delivery_account_key, all_targets, aliases=(account_name,)

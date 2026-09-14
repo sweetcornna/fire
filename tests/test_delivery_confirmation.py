@@ -21,6 +21,7 @@ class DeliveryConfirmationTests(unittest.TestCase):
         self.stack.enter_context(patch.object(tasks, "build_message", return_value="消息"))
         self.stack.enter_context(patch.object(tasks.time, "sleep"))
         self.stack.enter_context(patch.object(tasks, "_dismiss_login_prompt", return_value=False))
+        self.preload = self.stack.enter_context(patch.object(tasks, "_preload_friend_list"))
         self.input = Mock(spec=["type", "press"])
         self.stack.enter_context(patch.object(tasks, "_chat_target_match", return_value=(True, ["好友"])))
         self.stack.enter_context(patch.object(tasks, "_wait_for_chat_input", return_value=self.input))
@@ -203,7 +204,25 @@ class DeliveryConfirmationTests(unittest.TestCase):
         ), patch.object(tasks, "_persist_cookie_snapshot"):
             tasks.do_user_task(browser, "显示名", [], ["friend-id", "好友"], "account")
         self.assertEqual(self.input.press.call_count, 1)
+        self.preload.assert_called_once_with(self.page, "显示名")
         self.assertEqual(tasks._completed_targets_for_today("account", ["friend-id", "好友"]), {"friend-id", "好友"})
+
+    def test_preloaded_names_are_used_before_resuming_daily_delivery(self):
+        tasks._mark_target_sent_today("account", "friend-id")
+        browser = Mock()
+        browser.new_context.return_value.new_page.return_value = self.page
+
+        def preload(page, username):
+            record = ["123", "friend-id", "sec-friend", "新昵称", "新昵称"]
+            for alias in record:
+                tasks.userIDDict[alias] = record
+
+        self.preload.side_effect = preload
+        with patch.object(tasks, "wait_for_chat_ready", return_value=True), \
+             patch.object(tasks, "scroll_and_select_user", side_effect=AssertionError("would send again")), \
+             patch.object(tasks, "_persist_cookie_snapshot"):
+            tasks.do_user_task(browser, "显示名", [], ["新昵称"], "account")
+        self.input.press.assert_not_called()
 
     def test_proxy_failure_never_replays_an_accepted_upstream_request(self):
         self.submit()
@@ -301,6 +320,29 @@ class ChatDomConfirmationTests(unittest.TestCase):
         }''')
         self.assertTrue(tasks._chat_target_match(self.page, "乙")[0])
         self.assertFalse(tasks._chat_target_match(self.page, "甲")[0])
+
+    def test_preload_visits_lazy_names_before_returning_to_the_list_top(self):
+        self.page.locator(tasks.CONVERSATION_LIST_SELECTOR).evaluate('''element => {
+            element.style.height = '120px';
+            element.style.overflowY = 'auto';
+            element.innerHTML = Array.from({length:8}, (_, index) =>
+                '<div class="conversationConversationItemwrapper" style="height:80px">'
+                + '<span class="conversationConversationItemtitle">' + (100000 + index) + '</span></div>'
+            ).join('');
+            window.preloadClicks = 0;
+            element.addEventListener('click', () => window.preloadClicks++);
+            element.addEventListener('scroll', () => {
+                if (element.scrollTop > 0) {
+                    [...element.querySelectorAll('.conversationConversationItemtitle')]
+                        .forEach((title,index) => title.textContent = '已加载好友' + index);
+                }
+            });
+        }''')
+        with patch.object(tasks.time, "sleep"):
+            titles = tasks._preload_friend_list(self.page, "账号")
+        self.assertIn("已加载好友7", titles)
+        self.assertEqual(self.page.locator(tasks.CONVERSATION_LIST_SELECTOR).evaluate("element => element.scrollTop"), 0)
+        self.assertEqual(self.page.evaluate("window.preloadClicks"), 0)
 
     def test_existing_message_and_cleared_input_are_not_a_new_submission(self):
         before = tasks._chat_submission_snapshot(self.page, "今天遇到了甲")
