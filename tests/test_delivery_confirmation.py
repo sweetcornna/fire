@@ -137,15 +137,20 @@ class DeliveryConfirmationTests(unittest.TestCase):
 
     def test_live_diagnostic_probes_search_without_typing_or_creating_state(self):
         self.page.evaluate.return_value = {"inputs": [], "chat": []}
+        search_input = Mock()
         with patch.object(tasks, "collect_friend_titles", return_value=["列表好友"]), \
+             patch.object(tasks, "wait_for_chat_ready", return_value=True), \
              patch.object(tasks, "_open_chat_page_for_retry"), \
-             patch.object(tasks, "click_matching_visible_user", side_effect=["列表好友", None]), \
-             patch.object(tasks, "search_and_select_target", return_value="搜索好友") as search, \
+             patch.object(tasks, "click_matching_visible_user", side_effect=["列表好友", None, None]), \
+             patch.object(tasks, "find_search_input", return_value=search_input), \
+             patch.object(tasks, "fill_search_input") as fill, \
+             patch.object(tasks, "click_visible_text_result", return_value="搜索好友") as search, \
              patch.object(tasks, "_find_chat_input", return_value=self.input):
             matched, unmatched = tasks.diagnose_friend_matching(self.page, "账号", ["列表好友", "搜索好友"])
         self.assertEqual(matched, {"列表好友": "列表好友"})
         self.assertEqual(unmatched, ["搜索好友"])
-        search.assert_called_once_with(self.page, "账号", "搜索好友")
+        fill.assert_called_once_with(search_input, "搜索好友")
+        search.assert_called_once_with(self.page, "账号", "搜索好友", ["搜索好友"])
         self.input.type.assert_not_called()
         self.input.press.assert_not_called()
         self.assertFalse(self.path.exists())

@@ -334,8 +334,10 @@ def diagnose_friend_matching(page, username, targets):
         retries=config["taskRetryTimes"],
         delay=5,
         url="https://www.douyin.com/chat",
+        wait_until="commit",
     )
-    time.sleep(5)
+    if not wait_for_chat_ready(page, username):
+        raise RuntimeError(f"账号 {username} 诊断时聊天页面未就绪")
     friend_titles = collect_friend_titles(page, username)
     matched, unmatched = summarize_target_matches(friend_titles, targets)
 
@@ -357,12 +359,14 @@ def diagnose_friend_matching(page, username, targets):
         try:
             _open_chat_page_for_retry(page, username)
             selected = click_matching_visible_user(page, username, [target])
-            if not selected:
-                selected = search_and_select_target(page, username, target)
-            logger.info(
-                f"账号 {username} 诊断会话抽查: 目标 {target}，"
-                f"身份已确认={bool(selected)}，编辑器可见={_find_chat_input(page) is not None}"
-            )
+            if not selected and target in unmatched:
+                search_input = find_search_input(page)
+                if search_input is not None:
+                    fill_search_input(search_input, target)
+                    time.sleep(2)
+                    selected = click_matching_visible_user(page, username, [target])
+                    if not selected:
+                        selected = click_visible_text_result(page, username, target, [target])
             structure = page.evaluate(r"""() => {
                 const visible = element => {
                     const r = element.getBoundingClientRect();
@@ -388,6 +392,10 @@ def diagnose_friend_matching(page, username, targets):
                 };
             }""")
             logger.info(f"账号 {username} 诊断页面结构: {json.dumps(structure, ensure_ascii=False)}")
+            logger.info(
+                f"账号 {username} 诊断会话抽查: 目标 {target}，"
+                f"身份已确认={bool(selected)}，编辑器可见={_find_chat_input(page) is not None}"
+            )
         except Exception as error:
             logger.warning(f"账号 {username} 诊断会话抽查失败: 目标 {target}，{error}")
     return matched, unmatched
