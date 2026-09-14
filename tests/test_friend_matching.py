@@ -681,6 +681,15 @@ class FriendMatchingTests(unittest.TestCase):
         self.assertIn("stable-account-id", state["days"][tasks.date.today().isoformat()])
 
 
+class DecoratedNameMatchingTests(unittest.TestCase):
+    def test_target_keeps_matching_after_the_contact_drops_its_emoji(self):
+        self.assertEqual(tasks.checkTargetName("AllenWolf", ["AllenWolf🐺"]), "AllenWolf🐺")
+        self.assertEqual(tasks.checkTargetName("樊昕", ["樊昕🌈"]), "樊昕🌈")
+
+    def test_emoji_stripping_never_picks_between_two_candidates(self):
+        self.assertIsNone(tasks.checkTargetName("同名", ["同名🌈", "同名🐺"]))
+
+
 class SearchDiagnosticsTests(unittest.TestCase):
     def test_fruitless_search_records_a_bounded_page_snapshot(self):
         page = Mock()

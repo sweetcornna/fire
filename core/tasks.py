@@ -836,7 +836,10 @@ def checkTargetName(targetName, targets):
         for target in valid_targets:
             target_norm = _norm_value(target)
             stripped_target = EMOJI_PATTERN.sub("", target_norm).strip()
-            if stripped_name != targetName and (stripped_name == stripped_target or stripped_name == target_norm):
+            # Either side may carry the decoration: a contact can drop the
+            # emoji from a nickname the target list still spells with it.
+            decorated = stripped_name != targetName or stripped_target != target_norm
+            if decorated and (stripped_name == stripped_target or stripped_name == target_norm):
                 candidates.append(target_norm)
         if len(candidates) == 1:
             return candidates[0]
