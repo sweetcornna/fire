@@ -23,6 +23,8 @@ userData = get_userData()
 logger = setup_logger(level=config.get("logLevel", "Info"))
 matchMode = config.get("matchMode", "nickname")
 userIDDict = {}
+# Numeric conversation title -> the contact it turned out to belong to.
+placeholderIdentityDict = {}
 
 CONVERSATION_ITEM_SELECTOR = ".conversationConversationItemwrapper"
 CONVERSATION_TITLE_SELECTOR = ".conversationConversationItemtitle"
@@ -57,6 +59,8 @@ SEARCH_INPUT_SELECTORS = (
     'or contains(@data-placeholder, "搜索")]',
 )
 USER_NUMBER_TARGET_RE = re.compile(r"^用户(\d+)$")
+# Douyin keeps showing a conversation id until it fetches that profile.
+PLACEHOLDER_TITLE_RE = re.compile(r"^\d{5,}$")
 EMOJI_PATTERN = re.compile(r"[\U00010000-\U0010ffff☀-⟿️]")
 MAX_USER_SEARCH_SNIPPETS = 40
 MAX_EMPTY_SCROLLS = 10
@@ -66,12 +70,16 @@ FALLBACK_ELEMENT_TIMEOUT_MS = 1500
 DEFAULT_TARGET_RETRY_TIMES = 3
 DEFAULT_SEARCH_RESULT_WAIT_SECONDS = 4
 DEFAULT_CHAT_READY_TIMEOUT_MS = 30000
+DEFAULT_PLACEHOLDER_PROBE_LIMIT = 200
+DEFAULT_PLACEHOLDER_PROBE_SECONDS = 900
 CHAT_PAGE_URL = "https://www.douyin.com/chat"
 CHAT_HEADER_SELECTOR = (
     '.RightPanelHeadertitle, [class*="chatHeader"], [class*="ChatHeader"], [class*="chat-header"], '
     '[class*="messageHeader"], header, [role="heading"]'
 )
 _unconfirmed_submissions = set()
+# Bounded budget so a failing search documents itself without flooding logs.
+_search_snapshot_budget = 6
 
 
 class DeliveryUncertainError(RuntimeError):
@@ -93,6 +101,20 @@ def _dedupe(values):
             seen.add(value)
             result.append(value)
     return result
+
+
+def _is_placeholder_title(value):
+    """Tell an unresolved conversation id apart from a real display name.
+
+    Douyin keeps rendering a conversation's numeric id until it fetches that
+    contact's profile, so such a title carries no identity of its own.
+    """
+    return bool(PLACEHOLDER_TITLE_RE.match(_norm_value(value)))
+
+
+def resolve_placeholder_identity(title):
+    """Return the display name a probed ID-only conversation belongs to."""
+    return _norm_value(placeholderIdentityDict.get(_norm_value(title), ""))
 
 
 def _iter_user_records():
@@ -333,6 +355,269 @@ def collect_friend_titles(page, username):
         time.sleep(1.5)
 
 
+def _chat_header_names(page):
+    """Read the open conversation's displayed names from its chat header."""
+    try:
+        names = page.evaluate(
+            """
+            ({ listSelector, editorSelector, headerSelector }) => {
+                const normalize = (value) => (value || '')
+                    .normalize('NFKC')
+                    .replace(/[\\u3000\\u00a0]/g, ' ')
+                    .replace(/[\\u200b\\ufeff]/g, '')
+                    .replace(/\\s+/g, ' ')
+                    .trim();
+                const list = document.querySelector(listSelector);
+                const listRect = list ? list.getBoundingClientRect() : null;
+                const rightPaneStart = listRect ? listRect.right : window.innerWidth * 0.3;
+                const editor = Array.from(document.querySelectorAll(editorSelector))
+                    .find((element) => {
+                        const marker = [
+                            element.getAttribute('placeholder'),
+                            element.getAttribute('aria-label'),
+                            element.getAttribute('data-placeholder'),
+                            element.getAttribute('title'),
+                        ].filter(Boolean).join(' ');
+                        const rect = element.getBoundingClientRect();
+                        return !marker.includes('搜索')
+                            && rect
+                            && rect.right > rightPaneStart;
+                    }) || null;
+                const editorRect = editor ? editor.getBoundingClientRect() : null;
+                const editorTop = editorRect ? editorRect.top : window.innerHeight;
+                const headers = Array.from(document.querySelectorAll(headerSelector))
+                    .filter((header) => {
+                        const rect = header.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0
+                            && rect.left >= rightPaneStart - 4
+                            && rect.bottom <= editorTop
+                            && rect.height <= 160;
+                    });
+                if (!headers.length) {
+                    return [];
+                }
+                const headerTop = Math.min(
+                    ...headers.map((header) => header.getBoundingClientRect().top)
+                );
+                const titled = [];
+                const others = [];
+                for (const header of headers) {
+                    if (header.getBoundingClientRect().top > headerTop + 24) continue;
+                    const elements = [header].concat(
+                        Array.from(header.querySelectorAll('h1,h2,h3,div,span,a,button'))
+                    );
+                    for (const element of elements) {
+                        const rect = element.getBoundingClientRect();
+                        if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+                        if (rect.right <= rightPaneStart || rect.bottom > editorTop + 24) continue;
+                        const text = normalize(element.innerText || element.textContent || '');
+                        if (!text || text.length > 80) continue;
+                        // The title node names the contact; sibling nodes may
+                        // carry counters or status text, so keep them last.
+                        if (/title/i.test(String(element.className || ''))) {
+                            titled.push(text);
+                        } else {
+                            others.push(text);
+                        }
+                    }
+                }
+                return titled.concat(others);
+            }
+            """,
+            {
+                "listSelector": CONVERSATION_LIST_SELECTOR,
+                "editorSelector": CHAT_EDITOR_FALLBACK_SELECTOR,
+                "headerSelector": CHAT_HEADER_SELECTOR,
+            },
+        )
+    except Exception:
+        traceback.print_exc()
+        return []
+    return _dedupe(names or [])
+
+
+def _open_chat_names(page, exclude=(), timeout=None):
+    """Wait for the open conversation to show real names instead of an id.
+
+    Every header candidate is returned, title node first: a neighbouring node
+    can glue status text onto the name, so the caller decides which candidate
+    identifies the contact.  Names already on screen before the conversation
+    was opened are excluded on purpose - a click that opens nothing must not
+    hand the previous chat's identity to this one.
+    """
+    timeout = timeout if timeout is not None else config.get(
+        "chatOpenTimeout", DEFAULT_CHAT_OPEN_TIMEOUT_MS
+    )
+    excluded = {_norm_value(value) for value in exclude if _norm_value(value)}
+    deadline = time.monotonic() + max(0, int(timeout)) / 1000
+    while True:
+        names = [
+            name for name in _chat_header_names(page)
+            if name not in excluded and not _is_placeholder_title(name)
+        ]
+        if names:
+            return names
+        if time.monotonic() >= deadline:
+            return []
+        time.sleep(0.25)
+
+
+def _conversation_scroll_handle(page, username):
+    try:
+        return _element_handle_with_timeout(
+            page.locator(CONVERSATION_LIST_SELECTOR), FALLBACK_ELEMENT_TIMEOUT_MS
+        )
+    except Exception as error:
+        logger.debug(f"账号 {username} 未找到好友列表滚动容器: {error}")
+        return None
+
+
+def _scroll_conversation_list(page, username, delta=800):
+    """Scroll the virtualized conversation list; True when it actually moved."""
+    scrollable = _conversation_scroll_handle(page, username)
+    if scrollable is None:
+        return False
+    try:
+        before = page.evaluate("(element) => element.scrollTop", scrollable)
+        page.evaluate(f"(element) => {{ element.scrollTop += {int(delta)}; }}", scrollable)
+        time.sleep(0.3)
+        after = page.evaluate("(element) => element.scrollTop", scrollable)
+    except Exception as error:
+        logger.debug(f"账号 {username} 滚动好友列表失败: {error}")
+        return False
+    return before != after
+
+
+def _reset_conversation_scroll(page, username):
+    scrollable = _conversation_scroll_handle(page, username)
+    if scrollable is None:
+        return False
+    try:
+        page.evaluate("element => { element.scrollTop = 0; }", scrollable)
+    except Exception as error:
+        logger.debug(f"账号 {username} 复位好友列表失败: {error}")
+        return False
+    return True
+
+
+def probe_placeholder_identities(page, username, remaining_targets, limit=None, timeout=None):
+    """Open ID-only conversations so pending targets can be recognised.
+
+    Douyin renders a numeric id for every conversation whose profile it never
+    fetched, and a numeric title matches no target by name.  Opening such a
+    conversation forces that fetch and reveals the contact in the chat header,
+    which is the only identity this run can trust.  Probing never types or
+    sends anything.
+    """
+    pending = _dedupe(remaining_targets)
+    if not pending:
+        return {}
+    limit = max(1, int(
+        limit if limit is not None
+        else config.get("placeholderProbeLimit", DEFAULT_PLACEHOLDER_PROBE_LIMIT)
+    ))
+    seconds = max(1, int(
+        timeout if timeout is not None
+        else config.get("placeholderProbeSeconds", DEFAULT_PLACEHOLDER_PROBE_SECONDS)
+    ))
+    deadline = time.monotonic() + seconds
+    logger.info(
+        f"账号 {username} 开始探测未解析会话身份，待匹配目标 {len(pending)} 个，"
+        f"最多探测 {limit} 个会话"
+    )
+    resolved = {}
+    matched = {}
+    probed = set()
+    seen_titles = set()
+    # Seed the exclusion with the chat that is already open, so a click that
+    # opens nothing cannot hand its names to the conversation being probed.
+    open_names = set(_chat_header_names(page))
+    idle_scrolls = 0
+    _reset_conversation_scroll(page, username)
+    while pending and len(probed) < limit and time.monotonic() < deadline:
+        candidate = None
+        titles_before = len(seen_titles)
+        for element in page.locator(CONVERSATION_ITEM_SELECTOR).all():
+            try:
+                if hasattr(element, "is_visible") and not element.is_visible():
+                    continue
+                title = _norm_value(
+                    _locator_action(
+                        element.locator(CONVERSATION_TITLE_SELECTOR),
+                        "inner_text",
+                        timeout=FALLBACK_ELEMENT_TIMEOUT_MS,
+                    )
+                )
+            except Exception:
+                continue
+            if not title:
+                continue
+            seen_titles.add(title)
+            if title in probed or not _is_placeholder_title(title):
+                continue
+            if resolve_placeholder_identity(title):
+                probed.add(title)
+                continue
+            candidate = (element, title)
+            break
+
+        if candidate is None:
+            # The list is virtualized: stop once scrolling stops revealing
+            # conversations, so an endless list never stalls the run.
+            moved = _scroll_conversation_list(page, username)
+            if moved and len(seen_titles) > titles_before:
+                idle_scrolls = 0
+            else:
+                idle_scrolls += 1 if moved else 2
+                if idle_scrolls >= MAX_EMPTY_SCROLLS:
+                    break
+            time.sleep(1.0)
+            continue
+
+        idle_scrolls = 0
+        element, title = candidate
+        probed.add(title)
+        try:
+            _click_chat_candidate(element)
+        except Exception as error:
+            logger.debug(f"账号 {username} 打开未解析会话 {title} 失败: {error}")
+            continue
+        names = _open_chat_names(page, exclude=open_names)
+        if not names:
+            logger.warning(
+                f"账号 {username} 未解析会话 {title} 打开后仍无法确认身份，"
+                f"当前标题候选 {_chat_header_names(page)[:5]}"
+            )
+            continue
+        open_names = set(names)
+        # The header may expose the name both alone and wrapped in status
+        # text; keep the candidate that identifies a pending target.
+        name = names[0]
+        target = None
+        for candidate in names:
+            candidate_target = checkTargetName(candidate, pending)
+            if candidate_target:
+                name, target = candidate, candidate_target
+                break
+        placeholderIdentityDict[_norm_value(title)] = name
+        resolved[_norm_value(title)] = name
+        if target:
+            matched[target] = name
+            pending = [value for value in pending if value != target]
+            logger.info(
+                f"账号 {username} 未解析会话 {title} 确认为待发送目标 {target}（显示名 {name}）"
+            )
+        else:
+            logger.debug(f"账号 {username} 未解析会话 {title} 实为 {name}，不在待发送目标内")
+
+    logger.info(
+        f"账号 {username} 未解析会话探测结束: 探测 {len(probed)} 个，解析 {len(resolved)} 个，"
+        f"命中待发送目标 {len(matched)} 个，仍未匹配 {len(pending)} 个"
+    )
+    _reset_conversation_scroll(page, username)
+    return resolved
+
+
 def _preload_friend_list(page, username):
     """Load profile names before message activity starts reordering the list."""
     titles = collect_friend_titles(page, username)
@@ -524,6 +809,12 @@ def checkTargetName(targetName, targets):
     targetName = _norm_value(targetName)
     if not targetName:
         return None
+
+    # A conversation that only rendered its id was probed earlier; match the
+    # name that probe read from the chat header, never the id itself.
+    probed_name = resolve_placeholder_identity(targetName)
+    if probed_name:
+        targetName = probed_name
 
     # Filter out ambiguous targets whose alias cannot be uniquely resolved
     valid_targets = [
@@ -1597,6 +1888,60 @@ def click_visible_text_result(page, username, target, terms):
     return None
 
 
+def _search_result_snapshot(page, limit=10):
+    """Describe what the conversation column rendered after a chat search."""
+    return page.evaluate(
+        """
+        ({ listSelector, limit }) => {
+            const list = document.querySelector(listSelector);
+            const listRect = list ? list.getBoundingClientRect() : null;
+            const rightPaneStart = listRect ? listRect.right : window.innerWidth * 0.3;
+            const seen = new Set();
+            const entries = [];
+            for (const element of document.querySelectorAll('div,span,li,a,p')) {
+                const rect = element.getBoundingClientRect();
+                if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+                if (rect.left >= rightPaneStart) continue;
+                // Leaf nodes carry the labels; ancestors only repeat them.
+                if (element.children.length) continue;
+                const text = (element.innerText || element.textContent || '')
+                    .replace(/\\s+/g, ' ')
+                    .trim();
+                if (!text || text.length > 40) continue;
+                const css = String(element.className || '');
+                const parent = element.parentElement
+                    ? String(element.parentElement.className || '')
+                    : '';
+                const key = css + '|' + parent + '|' + text;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                entries.push({ css, parent, text });
+                if (entries.length >= limit) break;
+            }
+            return entries;
+        }
+        """,
+        {"listSelector": CONVERSATION_LIST_SELECTOR, "limit": limit},
+    )
+
+
+def _log_search_result_snapshot(page, username, target):
+    """Record a bounded sample of a fruitless search so it can be diagnosed."""
+    global _search_snapshot_budget
+    if _search_snapshot_budget <= 0:
+        return
+    _search_snapshot_budget -= 1
+    try:
+        entries = _search_result_snapshot(page)
+    except Exception:
+        traceback.print_exc()
+        return
+    logger.warning(
+        f"账号 {username} 搜索目标 {target} 未产生可点击候选，会话栏可见条目: "
+        f"{json.dumps(entries, ensure_ascii=False)}"
+    )
+
+
 def search_and_select_target(page, username, target):
     terms = get_search_terms_for_target(target)
     wait_seconds = max(
@@ -1642,6 +1987,7 @@ def search_and_select_target(page, username, target):
         except Exception:
             traceback.print_exc()
 
+    _log_search_result_snapshot(page, username, target)
     return None
 
 
@@ -1731,6 +2077,7 @@ def scroll_and_select_user(page, username, targets):
 
     # [修复] 新增：连续空滚动计数器（滚动后没有发现新好友的次数）
     empty_scroll_count = 0
+    placeholder_probe_done = False
     MAX_EMPTY_SCROLLS = 10  # 连续10次滚动没有新好友，认为到底了
 
     while True:
@@ -1797,6 +2144,15 @@ def scroll_and_select_user(page, username, targets):
                 logger.warning(
                     f"账号 {username} 连续 {MAX_EMPTY_SCROLLS} 次滚动未发现新好友，判定已到达底部"
                 )
+                # Contacts whose profile never loaded sit in the list as bare
+                # ids and can only be recognised by opening them.  Resolve
+                # those identities once, then walk the list again with them.
+                if remaining_targets and not placeholder_probe_done:
+                    placeholder_probe_done = True
+                    if probe_placeholder_identities(page, username, remaining_targets):
+                        found_targets.clear()
+                        empty_scroll_count = 0
+                        continue
                 for targetSymbol in search_remaining_targets(
                     page, username, remaining_targets
                 ):
@@ -1898,6 +2254,7 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
     # API mappings are account-specific.  Never let a previous account's
     # nickname/ID aliases select a similarly named contact in this account.
     userIDDict.clear()
+    placeholderIdentityDict.clear()
 
     context = browser.new_context()  # 每个任务使用独立的上下文
     session_authenticated = False

@@ -117,6 +117,12 @@ def get_config():
             os.getenv("CHAT_SEND_ACTION_TIMEOUT", "10000")
         ),  # 发送按键单次操作超时时间，单位毫秒
         "taskRetryTimes": int(os.getenv("TASK_RETRY_TIMES", "3")),  # 任务重试次数
+        "placeholderProbeLimit": int(
+            os.getenv("PLACEHOLDER_PROBE_LIMIT", "200")
+        ),  # 最多打开多少个仅显示 ID 的会话以确认身份
+        "placeholderProbeSeconds": int(
+            os.getenv("PLACEHOLDER_PROBE_SECONDS", "900")
+        ),  # 确认未解析会话身份的时间上限，单位秒
         "logLevel": os.getenv("LOG_LEVEL", "DEBUG"),  # 日志级别
         "debugUserIDMapping": os.getenv("DEBUG_USERID_MAPPING", "") == "1",
         "diagnoseUserSearch": os.getenv("DIAGNOSE_USER_SEARCH", "") == "1",

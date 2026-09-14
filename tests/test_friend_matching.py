@@ -2,7 +2,7 @@ import json
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import core.tasks as tasks
 
@@ -679,6 +679,29 @@ class FriendMatchingTests(unittest.TestCase):
         self.assertEqual(editable.typed, ["甲", "乙"])
         self.assertEqual(editable.pressed, ["Shift+Enter", "Enter"])
         self.assertIn("stable-account-id", state["days"][tasks.date.today().isoformat()])
+
+
+class SearchDiagnosticsTests(unittest.TestCase):
+    def test_fruitless_search_records_a_bounded_page_snapshot(self):
+        page = Mock()
+        page.evaluate.return_value = [
+            {"css": "searchResultitem", "parent": "searchResultlist", "text": "候选好友"}
+        ]
+
+        with patch.object(tasks, "_search_snapshot_budget", 1):
+            with self.assertLogs(tasks.logger, level="WARNING") as logs:
+                tasks._log_search_result_snapshot(page, "账号", "目标")
+            tasks._log_search_result_snapshot(page, "账号", "目标")
+
+        self.assertEqual(page.evaluate.call_count, 1)
+        self.assertIn("候选好友", logs.output[0])
+
+    def test_snapshot_failure_never_breaks_the_search_path(self):
+        page = Mock()
+        page.evaluate.side_effect = RuntimeError("detached frame")
+
+        with patch.object(tasks, "_search_snapshot_budget", 1):
+            tasks._log_search_result_snapshot(page, "账号", "目标")
 
 
 if __name__ == "__main__":
