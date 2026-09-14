@@ -31,11 +31,16 @@ def validate(snapshot):
     for index, cookie in enumerate(snapshot):
         if not isinstance(cookie, dict):
             raise SystemExit(f"会话快照第 {index} 项不是 Cookie 对象，拒绝回写")
+        name = str(cookie.get("name", "")).strip()
+        if not name:
+            # Douyin serves a nameless cookie; it restores nothing and must
+            # not be read as a damaged snapshot.
+            continue
         missing = [field for field in REQUIRED_FIELDS if not str(cookie.get(field, "")).strip()]
-        if missing:
-            name = str(cookie.get("name", "")) or f"#{index}"
+        if missing and name in SESSION_COOKIES:
             raise SystemExit(f"会话快照的 {name} 缺少字段 {missing}，拒绝回写")
-        names.add(cookie["name"])
+        if not missing:
+            names.add(name)
 
     found = [name for name in SESSION_COOKIES if name in names]
     if not found:

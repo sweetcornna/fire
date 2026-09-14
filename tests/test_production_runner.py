@@ -94,6 +94,25 @@ class ProductionRunnerTests(unittest.TestCase):
             self.assertEqual(result["123"][0]["value"], "new-123")
             self.assertEqual(result["456"][0]["value"], "keep-456")
 
+    def test_cookie_snapshot_drops_entries_a_browser_cannot_restore(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cookies.json"
+
+            with patch.dict(
+                os.environ,
+                {"HUOHUA_COOKIE_PERSIST_FILE": str(path)},
+                clear=False,
+            ):
+                task_flow._persist_cookie_snapshot(
+                    [
+                        {"name": "", "value": "douyin.com", "domain": "www.douyin.com"},
+                        {"name": "sessionid", "value": "live", "domain": ".douyin.com"},
+                    ]
+                )
+
+            result = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual([cookie["name"] for cookie in result], ["sessionid"])
+
 
 if __name__ == "__main__":
     unittest.main()

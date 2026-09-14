@@ -1126,11 +1126,33 @@ def _cookie_fingerprint(cookies):
     return summary
 
 
+def _usable_cookies(cookies):
+    """Keep only entries a browser can restore.
+
+    Douyin serves one nameless cookie; carrying it into the next run's jar
+    gains nothing and risks the whole restore being rejected.
+    """
+    usable = []
+    for cookie in cookies or []:
+        if not isinstance(cookie, dict):
+            continue
+        if not _norm_value(cookie.get("name")) or not str(cookie.get("value", "")).strip():
+            continue
+        usable.append(cookie)
+    return usable
+
+
 def _persist_cookie_snapshot(cookies, account_key=None):
     """Persist refreshed browser cookies without truncating other accounts."""
     value = os.getenv("HUOHUA_COOKIE_PERSIST_FILE", "").strip()
     if not value or not cookies:
         return
+    dropped = len(cookies) - len(_usable_cookies(cookies))
+    cookies = _usable_cookies(cookies)
+    if not cookies:
+        return
+    if dropped:
+        logger.debug(f"会话快照忽略了 {dropped} 条无法还原的 Cookie")
     path = Path(value).expanduser()
     try:
         existing = None

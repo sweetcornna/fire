@@ -33,6 +33,17 @@ class CookieSnapshotTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 cookie_snapshot.validate(payload)
 
+    def test_the_nameless_cookie_douyin_serves_does_not_fail_the_check(self):
+        nameless = {"name": "", "value": "douyin.com", "domain": "www.douyin.com"}
+
+        self.assertEqual(
+            cookie_snapshot.validate([nameless, cookie("sid_guard")]), ["sid_guard"]
+        )
+
+    def test_a_snapshot_of_only_unusable_entries_is_refused(self):
+        with self.assertRaises(SystemExit):
+            cookie_snapshot.validate([{"name": "", "value": "douyin.com"}])
+
     def test_missing_file_is_refused_without_a_traceback(self):
         with self.assertRaises(SystemExit):
             cookie_snapshot.load_snapshot("/nonexistent/cookies.json")
