@@ -349,6 +349,47 @@ def diagnose_friend_matching(page, username, targets):
         logger.warning(
             f"账号 {username} 匹配诊断未匹配: 目标 {target}，搜索词 {get_search_terms_for_target(target)}"
         )
+    # List membership alone does not validate the live chat/search selectors.
+    # Probe one listed contact and one search-only contact without typing a
+    # message or creating a delivery-state entry.
+    probes = list(matched)[:1] + unmatched[:1]
+    for target in probes:
+        try:
+            _open_chat_page_for_retry(page, username)
+            selected = click_matching_visible_user(page, username, [target])
+            if not selected:
+                selected = search_and_select_target(page, username, target)
+            logger.info(
+                f"账号 {username} 诊断会话抽查: 目标 {target}，"
+                f"身份已确认={bool(selected)}，编辑器可见={_find_chat_input(page) is not None}"
+            )
+            structure = page.evaluate(r"""() => {
+                const visible = element => {
+                    const r = element.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                };
+                const describe = element => ({
+                    tag: element.tagName, css: String(element.className || ''),
+                    marker: element.getAttribute('data-e2e'),
+                    placeholder: element.getAttribute('data-placeholder')
+                        || element.getAttribute('placeholder'),
+                    x: Math.round(element.getBoundingClientRect().x),
+                    y: Math.round(element.getBoundingClientRect().y)
+                });
+                return {
+                    inputs: [...document.querySelectorAll('input,[contenteditable="true"]')]
+                        .filter(visible).map(describe).slice(0, 12),
+                    chat: [...document.querySelectorAll('[class]')].filter(element => {
+                        const r = element.getBoundingClientRect();
+                        return visible(element) && r.left > innerWidth * 0.25
+                            && /header|title|editor/i.test(String(element.className))
+                            && r.top < innerHeight;
+                    }).map(describe).slice(0, 20)
+                };
+            }""")
+            logger.info(f"账号 {username} 诊断页面结构: {json.dumps(structure, ensure_ascii=False)}")
+        except Exception as error:
+            logger.warning(f"账号 {username} 诊断会话抽查失败: 目标 {target}，{error}")
     return matched, unmatched
 
 

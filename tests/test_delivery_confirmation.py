@@ -135,6 +135,21 @@ class DeliveryConfirmationTests(unittest.TestCase):
         with patch.object(tasks, "_chat_target_match", side_effect=[(False, ["旧好友"]), (True, ["好友"])]):
             self.assertTrue(tasks.wait_for_chat_editor(self.page, "账号", "好友", timeout=1000))
 
+    def test_live_diagnostic_probes_search_without_typing_or_creating_state(self):
+        self.page.evaluate.return_value = {"inputs": [], "chat": []}
+        with patch.object(tasks, "collect_friend_titles", return_value=["列表好友"]), \
+             patch.object(tasks, "_open_chat_page_for_retry"), \
+             patch.object(tasks, "click_matching_visible_user", side_effect=["列表好友", None]), \
+             patch.object(tasks, "search_and_select_target", return_value="搜索好友") as search, \
+             patch.object(tasks, "_find_chat_input", return_value=self.input):
+            matched, unmatched = tasks.diagnose_friend_matching(self.page, "账号", ["列表好友", "搜索好友"])
+        self.assertEqual(matched, {"列表好友": "列表好友"})
+        self.assertEqual(unmatched, ["搜索好友"])
+        search.assert_called_once_with(self.page, "账号", "搜索好友")
+        self.input.type.assert_not_called()
+        self.input.press.assert_not_called()
+        self.assertFalse(self.path.exists())
+
     def test_account_resume_sends_only_unattempted_targets_and_reports_pending(self):
         tasks._mark_target_pending_today("account", "待核验好友", "消息")
         tasks._unconfirmed_submissions.clear()
