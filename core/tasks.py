@@ -1943,6 +1943,16 @@ def _log_search_result_snapshot(page, username, target):
         f"账号 {username} 搜索目标 {target} 未产生可点击候选，会话栏可见条目: "
         f"{json.dumps(entries, ensure_ascii=False)}"
     )
+    # An empty column reads the same whether the search found nothing or the
+    # results render somewhere this snapshot cannot see; a picture settles it.
+    try:
+        logs_dir = Path("logs")
+        logs_dir.mkdir(exist_ok=True)
+        shot = logs_dir / f"search-empty-{_safe_filename(target)}.png"
+        page.screenshot(path=str(shot))
+        logger.warning(f"账号 {username} 搜索目标 {target} 的页面截图: {shot}")
+    except Exception:
+        traceback.print_exc()
 
 
 def search_and_select_target(page, username, target):
