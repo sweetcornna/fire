@@ -22,6 +22,10 @@ class DeliveryConfirmationTests(unittest.TestCase):
         self.stack.enter_context(patch.object(tasks.time, "sleep"))
         self.stack.enter_context(patch.object(tasks, "_dismiss_login_prompt", return_value=False))
         self.preload = self.stack.enter_context(patch.object(tasks, "_preload_friend_list"))
+        self.preload.return_value = []
+        self.probe = self.stack.enter_context(
+            patch.object(tasks, "probe_placeholder_identities", return_value={})
+        )
         self.input = Mock(spec=["type", "press"])
         self.stack.enter_context(patch.object(tasks, "_chat_target_match", return_value=(True, ["好友"])))
         self.stack.enter_context(patch.object(tasks, "_wait_for_chat_input", return_value=self.input))
@@ -177,6 +181,65 @@ class DeliveryConfirmationTests(unittest.TestCase):
         self.assertEqual(self.input.press.call_count, 1)
         self.assertEqual(tasks._target_delivery_statuses("account", selected), {"未尝试好友": "submitted"})
         context.close.assert_called_once()
+
+    def test_id_only_conversations_are_resolved_before_the_delivery_pass(self):
+        self.preload.return_value = ["好友甲", "2745912548403578"]
+        browser = Mock()
+        browser.new_context.return_value.new_page.return_value = self.page
+        order = []
+        self.probe.side_effect = lambda *args, **kwargs: order.append("probe") or {}
+
+        with patch.object(tasks, "wait_for_chat_ready", return_value=True), patch.object(
+            tasks, "scroll_and_select_user",
+            side_effect=lambda *args: order.append("select") or iter(()),
+        ), patch.object(tasks, "_persist_cookie_snapshot"):
+            with self.assertRaisesRegex(RuntimeError, "0/1"):
+                tasks.do_user_task(browser, "显示名", [], ["找不到的好友"], "account")
+
+        self.assertEqual(order, ["probe", "select"])
+        self.assertEqual(self.probe.call_args.args[2], ["找不到的好友"])
+
+    def test_a_fully_named_list_is_never_probed(self):
+        self.preload.return_value = ["好友甲", "好友乙"]
+        browser = Mock()
+        browser.new_context.return_value.new_page.return_value = self.page
+
+        with patch.object(tasks, "wait_for_chat_ready", return_value=True), patch.object(
+            tasks, "scroll_and_select_user", return_value=iter(())
+        ), patch.object(tasks, "_persist_cookie_snapshot"):
+            with self.assertRaises(RuntimeError):
+                tasks.do_user_task(browser, "显示名", [], ["找不到的好友"], "account")
+
+        self.probe.assert_not_called()
+
+    def test_a_diagnostic_run_still_carries_its_refreshed_session_forward(self):
+        browser = Mock()
+        browser.new_context.return_value.new_page.return_value = self.page
+
+        with patch.dict(tasks.config, {"diagnoseFriendMatching": True}), patch.object(
+            tasks, "diagnose_friend_matching", return_value=({}, [])
+        ) as diagnose, patch.object(tasks, "_logged_out", return_value=False), patch.object(
+            tasks, "_persist_cookie_snapshot"
+        ) as persist:
+            tasks.do_user_task(browser, "显示名", [], ["好友"], "account")
+
+        diagnose.assert_called_once()
+        persist.assert_called_once()
+        self.input.press.assert_not_called()
+
+    def test_a_diagnostic_that_never_logged_in_writes_no_session_back(self):
+        browser = Mock()
+        browser.new_context.return_value.new_page.return_value = self.page
+
+        with patch.dict(tasks.config, {"diagnoseFriendMatching": True}), patch.object(
+            tasks, "diagnose_friend_matching", side_effect=RuntimeError("聊天页面未就绪")
+        ), patch.object(tasks, "_logged_out", return_value=True), patch.object(
+            tasks, "_persist_cookie_snapshot"
+        ) as persist:
+            with self.assertRaises(RuntimeError):
+                tasks.do_user_task(browser, "显示名", [], ["好友"], "account")
+
+        persist.assert_not_called()
 
     def test_unselected_target_is_in_failure_report(self):
         browser = Mock()

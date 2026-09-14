@@ -709,6 +709,53 @@ def diagnose_friend_matching(page, username, targets):
             )
         except Exception as error:
             logger.warning(f"账号 {username} 诊断会话抽查失败: 目标 {target}，{error}")
+
+    # Delivery decides who a chat belongs to by reading its header, and ID-only
+    # conversations are resolved the same way.  Exercise that reading against
+    # the live page here, where nothing is typed or sent.
+    placeholder_titles = [title for title in friend_titles if _is_placeholder_title(title)]
+    logger.info(
+        f"账号 {username} 匹配诊断发现仅显示 ID 的会话 {len(placeholder_titles)} 个"
+    )
+    try:
+        _open_chat_page_for_retry(page, username)
+        previous = next(
+            (name for name in _chat_header_names(page) if not _is_placeholder_title(name)),
+            "",
+        )
+        checked = 0
+        for element in page.locator(CONVERSATION_ITEM_SELECTOR).all():
+            if checked >= 3:
+                break
+            try:
+                if hasattr(element, "is_visible") and not element.is_visible():
+                    continue
+                title = _norm_value(
+                    _locator_action(
+                        element.locator(CONVERSATION_TITLE_SELECTOR),
+                        "inner_text",
+                        timeout=FALLBACK_ELEMENT_TIMEOUT_MS,
+                    )
+                )
+                if not title:
+                    continue
+                _click_chat_candidate(element)
+                names = _open_chat_names(page, exclude=(previous,))
+                logger.info(
+                    f"账号 {username} 标题读取抽查: 列表标题 {title} -> 聊天标题候选 {names}"
+                )
+                if names:
+                    previous = names[0]
+                checked += 1
+            except Exception as error:
+                logger.warning(f"账号 {username} 标题读取抽查失败: {error}")
+        if placeholder_titles:
+            resolved = probe_placeholder_identities(page, username, targets)
+            logger.info(
+                f"账号 {username} 诊断占位会话解析结果: {json.dumps(resolved, ensure_ascii=False)}"
+            )
+    except Exception as error:
+        logger.warning(f"账号 {username} 标题读取抽查未完成: {error}")
     return matched, unmatched
 
 
@@ -2379,13 +2426,21 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
     logger.info(f"账号 {account_name} 注入的会话指纹: {injected_fingerprint}")
 
     try:
+        # A diagnostic also uses up the login session, so its refreshed
+        # cookies have to be carried forward exactly like a delivery's.
         if config.get("diagnoseUserSearch"):
             logger.info(f"账号 {username} 启用用户搜索诊断模式，不发送消息")
-            diagnose_user_search(page, username, targets)
+            try:
+                diagnose_user_search(page, username, targets)
+            finally:
+                session_authenticated = not _logged_out(page)
             return
 
         if config.get("diagnoseFriendMatching"):
-            diagnose_friend_matching(page, username, targets)
+            try:
+                diagnose_friend_matching(page, username, targets)
+            finally:
+                session_authenticated = not _logged_out(page)
             return
 
         # 打开抖音网页聊天页面
@@ -2404,7 +2459,7 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
 
         # Fetch names before the first submission: the live IM client may leave
         # off-screen contacts as numeric placeholders during message activity.
-        _preload_friend_list(page, account_name)
+        preloaded_titles = _preload_friend_list(page, account_name)
 
         delivery_statuses = _target_delivery_statuses(
             delivery_account_key, all_targets, aliases=(account_name,)
@@ -2436,6 +2491,19 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
         logger.debug(
             f"账号 {account_name} 开始发送消息，本次待处理 {len(pending_targets)}/{len(all_targets)} 个目标"
         )
+        # A conversation Douyin never resolved renders as a bare id and can
+        # never be matched by name.  Resolve those identities up front instead
+        # of after the delivery pass has already walked the whole list.
+        placeholder_titles = [
+            title for title in (preloaded_titles or []) if _is_placeholder_title(title)
+        ]
+        if pending_targets and placeholder_titles:
+            logger.info(
+                f"账号 {account_name} 预加载发现 {len(placeholder_titles)} 个仅显示 ID 的会话，"
+                "先确认身份再开始发送"
+            )
+            probe_placeholder_identities(page, account_name, pending_targets)
+
         completed_targets = set(completed)
         message = build_message() if pending_targets else ""
         selections = scroll_and_select_user(page, account_name, pending_targets) if pending_targets else ()
