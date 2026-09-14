@@ -4,6 +4,11 @@ name: 【dev（测试）分支】DouYin Spark Flow Schedule Run
 on:
   workflow_dispatch: # 由外部服务器 cron 触发（北京 09:00）；移除 GitHub 原生 schedule 以避免双重触发导致重复发消息
     inputs:
+      diagnose_only:
+        description: "仅检查线上好友匹配，不输入或发送消息"
+        required: false
+        default: false
+        type: boolean
       preview_only:
         description: "只让项目生成预览，不登录抖音、不发送"
         required: false
@@ -24,6 +29,16 @@ jobs:
     runs-on: ubuntu-latest
     environment: user-data
     steps:
+    - name: Validate delivery branch
+      env:
+        PREVIEW_ONLY: ${{ inputs.preview_only || 'false' }}
+        DELIVERY_REF: ${{ github.ref }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: |
+        if [[ "$PREVIEW_ONLY" != "true" && "$DELIVERY_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+          echo "::error::Real deliveries must run from the repository default branch to share daily delivery state."
+          exit 1
+        fi
     - uses: actions/checkout@v4
       with:
         ref: dev
@@ -55,14 +70,15 @@ jobs:
       id: delivery-cache
       with:
         path: .state/delivery-state.json
-        key: huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
-          huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}-
-          huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}
+          huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}-
+          huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}
     - name: Run DouYin Spark Flow
       env:
         PREVIEW_ONLY: ${{ inputs.preview_only || 'false' }}
         AI_PREVIEW_COUNT: ${{ inputs.preview_count || '5' }}
+        DIAGNOSE_FRIEND_MATCHING: ${{ inputs.diagnose_only && '1' || vars.DIAGNOSE_FRIEND_MATCHING || '0' }}
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         COOKIES_33217367887: ${{ secrets.COOKIES_33217367887 }}
         BROWSER_TIMEOUT: "60000"
@@ -77,15 +93,18 @@ jobs:
         REQUIRE_ALL_TARGETS: "1"
       run: python main.py
     - uses: actions/cache/save@v4
-      if: ${{ always() && !cancelled() }}
+      if: ${{ always() && steps.delivery-date.outputs.today != '' && hashFiles('.state/delivery-state.json') != '' }}
       with:
         path: .state/delivery-state.json
-        key: huohua-delivery-${{ github.ref_name }}-${{ steps.delivery-date.outputs.today }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: huohua-delivery-dev-${{ steps.delivery-date.outputs.today }}-${{ github.run_id }}-${{ github.run_attempt }}
     - uses: actions/upload-artifact@v4
-      if: ${{ !cancelled() }}
+      if: ${{ always() }}
       with:
         name: run-logs
-        path: logs/
+        include-hidden-files: true
+        path: |
+          logs/
+          .state/delivery-state.json
   workflow-keepalive:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
