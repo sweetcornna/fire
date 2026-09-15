@@ -73,6 +73,9 @@ DEFAULT_TARGET_RETRY_TIMES = 3
 DEFAULT_SEARCH_RESULT_WAIT_SECONDS = 4
 DEFAULT_CHAT_READY_TIMEOUT_MS = 30000
 DEFAULT_LIST_GROWTH_WAIT_SECONDS = 12
+# The conversation list keeps loading for minutes after login; 45 of 101
+# conversations had rendered one minute in.
+DEFAULT_LIST_SETTLE_SECONDS = 600
 DEFAULT_MAX_SENDS_PER_RUN = 35
 DEFAULT_SEND_INTERVAL_MIN_SECONDS = 25
 DEFAULT_SEND_INTERVAL_MAX_SECONDS = 70
@@ -463,7 +466,11 @@ def _conversation_scroll_handle(page, username):
         return None
 
 
-def _conversation_scroll_metrics(page, scrollable):
+def _conversation_scroll_metrics(page, scrollable=None):
+    if scrollable is None:
+        scrollable = _conversation_scroll_handle(page, "")
+        if scrollable is None:
+            return {"top": 0, "height": 0}
     metrics = page.evaluate(
         "(element) => ({ top: element.scrollTop, height: element.scrollHeight })",
         scrollable,
@@ -551,6 +558,60 @@ def _reset_conversation_scroll(page, username):
         logger.debug(f"账号 {username} 复位好友列表失败: {error}")
         return False
     return True
+
+
+def _await_conversation_growth(page, username, known_height, deadline):
+    """Wait for the chat page to load conversations beyond what we have walked.
+
+    The list fills in for several minutes after login: a run that walked 45
+    conversations one minute in found 101 of them seven minutes later.  Only
+    the loaded ones can be matched or even searched, so a scan that stops at
+    the first quiet moment reports most of the list as missing contacts.
+    """
+    announced = False
+    rounds = 0
+    while time.monotonic() < deadline:
+        _scroll_conversation_list(page, username)
+        metrics = _conversation_scroll_metrics(page)
+        height = (metrics or {}).get("height") or 0
+        if height > known_height:
+            logger.info(
+                f"账号 {username} 好友列表仍在加载，继续等待后重新走一遍 "
+                f"(scrollHeight {known_height} -> {height})"
+            )
+            return True
+        if not announced:
+            announced = True
+            logger.info(
+                f"账号 {username} 好友列表暂时停在 scrollHeight {height}，"
+                f"最多再等 {int(max(0, deadline - time.monotonic()))}s 看它是否继续加载"
+            )
+        rounds += 1
+        if rounds % 4 == 0:
+            _open_a_loaded_conversation(page, username)
+        _reset_conversation_scroll(page, username)
+        time.sleep(3.0)
+    return False
+
+
+def _open_a_loaded_conversation(page, username):
+    """Open one already-loaded conversation to make the client sync again.
+
+    The list that stalled at 45 conversations held 101 of them right after a
+    run had opened dozens of chats, so the fetch that loads the rest looks
+    like it follows conversation activity rather than time alone.  Opening a
+    chat only reads it; nothing is sent here.
+    """
+    try:
+        for element in page.locator(CONVERSATION_ITEM_SELECTOR).all():
+            if hasattr(element, "is_visible") and not element.is_visible():
+                continue
+            _click_chat_candidate(element)
+            logger.debug(f"账号 {username} 打开一个已加载会话以促使列表继续同步")
+            return True
+    except Exception as error:
+        logger.debug(f"账号 {username} 打开已加载会话失败: {error}")
+    return False
 
 
 def probe_placeholder_identities(page, username, remaining_targets, limit=None, timeout=None):
@@ -2475,6 +2536,10 @@ def scroll_and_select_user(page, username, targets):
     empty_scroll_count = 0
     placeholder_probe_done = False
     extra_lap_done = False
+    best_list_height = 0
+    list_scan_deadline = time.monotonic() + max(
+        0, int(config.get("listSettleSeconds", DEFAULT_LIST_SETTLE_SECONDS))
+    )
     MAX_EMPTY_SCROLLS = 10  # 连续10次滚动没有新好友，认为到底了
 
     while True:
@@ -2563,6 +2628,23 @@ def scroll_and_select_user(page, username, targets):
                     found_targets.clear()
                     empty_scroll_count = 0
                     continue
+                # Search only looks at conversations the page already holds,
+                # so give the list the minutes it needs to finish loading
+                # before declaring the rest of the contacts unreachable.
+                if remaining_targets:
+                    metrics = _conversation_scroll_metrics(page) or {}
+                    best_list_height = max(best_list_height, metrics.get("height") or 0)
+                    if _await_conversation_growth(
+                        page, username, best_list_height, list_scan_deadline
+                    ):
+                        _reset_conversation_scroll(page, username)
+                        found_targets.clear()
+                        empty_scroll_count = 0
+                        continue
+                    logger.warning(
+                        f"账号 {username} 好友列表已停止加载，共 {len(found_targets)} 个会话，"
+                        f"仍有 {len(remaining_targets)} 个目标只能靠搜索兜底"
+                    )
                 for targetSymbol in search_remaining_targets(
                     page, username, remaining_targets
                 ):

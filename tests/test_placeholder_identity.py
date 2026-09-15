@@ -101,7 +101,8 @@ class PlaceholderIdentityTests(unittest.TestCase):
         # Keep the header wait short: sleep is stubbed out, so the real
         # chat-open timeout would spin for seconds per unresolved click.
         timeouts = patch.dict(
-            tasks.config, {"chatOpenTimeout": 50, "listGrowthWaitSeconds": 0}
+            tasks.config,
+            {"chatOpenTimeout": 50, "listGrowthWaitSeconds": 0, "listSettleSeconds": 0},
         )
         timeouts.start()
         self.addCleanup(timeouts.stop)
@@ -242,6 +243,50 @@ class PlaceholderIdentityTests(unittest.TestCase):
             selected = list(tasks.scroll_and_select_user(page, "账号", ["迟到的好友"]))
 
         self.assertEqual(selected, ["迟到的好友"])
+
+    def test_contacts_that_load_minutes_later_are_walked_before_search(self):
+        """The list keeps loading long after the first lap declares it done.
+
+        A run that walked 45 conversations one minute after login found 101 of
+        them seven minutes later.  Falling back to search at the first quiet
+        moment reaches none of the rest, because chat search only looks at
+        conversations the page has already loaded.
+        """
+        page = _Page([conversation("先到的好友", "先到的好友")])
+        resets = {"count": 0}
+        original = tasks._reset_conversation_scroll
+
+        def reset(*args, **kwargs):
+            resets["count"] += 1
+            # Later than the extra lap, so only the growth wait can catch it.
+            if resets["count"] == 2:
+                page.conversations.append(conversation("迟到的好友", "迟到的好友"))
+            return original(*args, **kwargs)
+
+        with patch.dict(tasks.config, {"listSettleSeconds": 10}), patch.object(
+            tasks, "wait_for_chat_editor", return_value=True
+        ), patch.object(
+            tasks, "search_remaining_targets", return_value=iter(())
+        ) as search, patch.object(
+            tasks, "_reset_conversation_scroll", side_effect=reset
+        ):
+            selected = list(tasks.scroll_and_select_user(page, "账号", ["迟到的好友"]))
+
+        self.assertEqual(selected, ["迟到的好友"])
+        search.assert_not_called()
+
+    def test_search_still_runs_once_the_list_stops_loading(self):
+        page = _Page([conversation("只有这一个", "只有这一个")])
+
+        with patch.dict(tasks.config, {"listSettleSeconds": 1}), patch.object(
+            tasks, "wait_for_chat_editor", return_value=True
+        ), patch.object(
+            tasks, "search_remaining_targets", return_value=iter(("走丢的好友",))
+        ) as search:
+            selected = list(tasks.scroll_and_select_user(page, "账号", ["走丢的好友"]))
+
+        self.assertEqual(selected, ["走丢的好友"])
+        search.assert_called_once()
 
     def test_selection_clicks_the_id_only_conversation_of_a_probed_target(self):
         page = _Page([conversation("2745912548403578", "Lakers")])

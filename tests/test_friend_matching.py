@@ -263,7 +263,9 @@ class FriendMatchingTests(unittest.TestCase):
         tasks.userIDDict = {}
         # Real time still passes while sleep is stubbed out, so the live
         # wait for the list to load more would dominate the suite.
-        growth = patch.dict(tasks.config, {"listGrowthWaitSeconds": 0})
+        growth = patch.dict(
+            tasks.config, {"listGrowthWaitSeconds": 0, "listSettleSeconds": 0}
+        )
         growth.start()
         self.addCleanup(growth.stop)
 

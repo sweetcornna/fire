@@ -129,6 +129,9 @@ def get_config():
         "listGrowthWaitSeconds": int(
             os.getenv("LIST_GROWTH_WAIT_SECONDS", "5")
         ),  # 好友列表滚不动后，等待其加载下一页的时间上限，单位秒
+        "listSettleSeconds": int(
+            os.getenv("LIST_SETTLE_SECONDS", "600")
+        ),  # 列表停止加载前，等待它继续加载更多会话的时间上限，单位秒
         "placeholderProbeLimit": int(
             os.getenv("PLACEHOLDER_PROBE_LIMIT", "200")
         ),  # 最多打开多少个仅显示 ID 的会话以确认身份
