@@ -71,7 +71,7 @@ FALLBACK_ELEMENT_TIMEOUT_MS = 1500
 DEFAULT_TARGET_RETRY_TIMES = 3
 DEFAULT_SEARCH_RESULT_WAIT_SECONDS = 4
 DEFAULT_CHAT_READY_TIMEOUT_MS = 30000
-DEFAULT_LIST_GROWTH_WAIT_SECONDS = 5
+DEFAULT_LIST_GROWTH_WAIT_SECONDS = 12
 DEFAULT_PLACEHOLDER_PROBE_LIMIT = 200
 DEFAULT_PLACEHOLDER_PROBE_SECONDS = 900
 CHAT_PAGE_URL = "https://www.douyin.com/chat"
@@ -469,6 +469,27 @@ def _conversation_scroll_metrics(page, scrollable):
     return {"top": metrics.get("top") or 0, "height": metrics.get("height") or 0}
 
 
+def _wheel_over_conversation_list(page, username, delta):
+    """Scroll with a real wheel gesture over the list.
+
+    Setting scrollTop moves the rendered window but does not always make the
+    client fetch the next page of conversations; a wheel event is what a
+    person produces.
+    """
+    try:
+        box = page.locator(CONVERSATION_LIST_SELECTOR).bounding_box()
+        if not box:
+            return False
+        page.mouse.move(
+            box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+        )
+        page.mouse.wheel(0, delta)
+        return True
+    except Exception as error:
+        logger.debug(f"账号 {username} 好友列表滚轮事件不可用: {error}")
+        return False
+
+
 def _scroll_conversation_list(page, username, delta=800, settle_seconds=None):
     """Scroll the conversation list, waiting for it to load the next page.
 
@@ -486,13 +507,24 @@ def _scroll_conversation_list(page, username, delta=800, settle_seconds=None):
     try:
         before = _conversation_scroll_metrics(page, scrollable)
         deadline = time.monotonic() + max(0.0, float(settle))
+        attempts = 0
         while True:
+            attempts += 1
             page.evaluate(
                 f"(element) => {{ element.scrollTop += {int(delta)}; }}", scrollable
             )
+            # Alternate a real wheel gesture: some builds only fetch on those.
+            if attempts % 2 == 0:
+                _wheel_over_conversation_list(page, username, delta)
             time.sleep(0.3)
             after = _conversation_scroll_metrics(page, scrollable)
-            if after["top"] != before["top"] or after["height"] > before["height"]:
+            if after["height"] > before["height"]:
+                logger.debug(
+                    f"账号 {username} 好友列表加载了更多会话 "
+                    f"(scrollHeight {before['height']} -> {after['height']})"
+                )
+                return True
+            if after["top"] != before["top"]:
                 return True
             if time.monotonic() >= deadline:
                 logger.debug(
