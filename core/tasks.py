@@ -2270,6 +2270,7 @@ def scroll_and_select_user(page, username, targets):
     # [修复] 新增：连续空滚动计数器（滚动后没有发现新好友的次数）
     empty_scroll_count = 0
     placeholder_probe_done = False
+    extra_lap_done = False
     MAX_EMPTY_SCROLLS = 10  # 连续10次滚动没有新好友，认为到底了
 
     while True:
@@ -2345,6 +2346,19 @@ def scroll_and_select_user(page, username, targets):
                         found_targets.clear()
                         empty_scroll_count = 0
                         continue
+                # The conversation list keeps loading while the run works it:
+                # a first lap that walked 45 conversations can become 101 by
+                # the time it ends, so walk it once more before giving up.
+                if remaining_targets and not extra_lap_done:
+                    extra_lap_done = True
+                    logger.info(
+                        f"账号 {username} 列表走完仍有 {len(remaining_targets)} 个目标未找到，"
+                        "回到顶部再走一遍"
+                    )
+                    _reset_conversation_scroll(page, username)
+                    found_targets.clear()
+                    empty_scroll_count = 0
+                    continue
                 for targetSymbol in search_remaining_targets(
                     page, username, remaining_targets
                 ):

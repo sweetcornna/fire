@@ -223,6 +223,26 @@ class PlaceholderIdentityTests(unittest.TestCase):
         search.assert_not_called()
         self.submit.assert_not_called()
 
+    def test_a_target_that_only_loads_later_is_found_on_a_second_lap(self):
+        page = _Page([conversation("先到的好友", "先到的好友")])
+
+        def load_more():
+            if len(page.conversations) == 1:
+                page.conversations.append(conversation("迟到的好友", "迟到的好友"))
+
+        original = tasks._reset_conversation_scroll
+
+        def reset(*args, **kwargs):
+            load_more()
+            return original(*args, **kwargs)
+
+        with patch.object(tasks, "wait_for_chat_editor", return_value=True), patch.object(
+            tasks, "search_remaining_targets", return_value=iter(())
+        ), patch.object(tasks, "_reset_conversation_scroll", side_effect=reset):
+            selected = list(tasks.scroll_and_select_user(page, "账号", ["迟到的好友"]))
+
+        self.assertEqual(selected, ["迟到的好友"])
+
     def test_selection_clicks_the_id_only_conversation_of_a_probed_target(self):
         page = _Page([conversation("2745912548403578", "Lakers")])
         self.probe(page, ["Lakers"])
