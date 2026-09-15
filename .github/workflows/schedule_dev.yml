@@ -19,6 +19,11 @@ on:
         required: false
         default: "5"
         type: string
+      friend_list_only:
+        description: "只侦察互关好友列表，不输入或发送消息"
+        required: false
+        default: false
+        type: boolean
 concurrency:
   # Keep this in the same queue as schedule.yml to prevent duplicate sends.
   group: douyin-spark-dev
@@ -79,6 +84,7 @@ jobs:
         PREVIEW_ONLY: ${{ inputs.preview_only || 'false' }}
         AI_PREVIEW_COUNT: ${{ inputs.preview_count || '5' }}
         DIAGNOSE_FRIEND_MATCHING: ${{ inputs.diagnose_only && '1' || vars.DIAGNOSE_FRIEND_MATCHING || '0' }}
+        DIAGNOSE_FRIEND_LIST: ${{ inputs.friend_list_only && '1' || '0' }}
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         COOKIES_33217367887: ${{ secrets.COOKIES_33217367887 }}
         BROWSER_TIMEOUT: "60000"

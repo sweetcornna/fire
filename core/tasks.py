@@ -844,6 +844,190 @@ def describe_conversation_payload(content_type, body):
     return summary
 
 
+FRIEND_LIST_MARKERS = (
+    "aweme/v1/web/user/following/list",
+    "aweme/v1/web/friend/follow/list",
+    "aweme/v1/web/im/friend/list",
+    "aweme/v1/web/user/follower/list",
+)
+FRIEND_PAGE_URLS = (
+    "https://www.douyin.com/user/self?showTab=follow",
+    "https://www.douyin.com/user/self",
+)
+FRIEND_PANEL_LABELS = ("互关朋友", "朋友", "关注")
+
+
+def parse_friend_list_payload(payload):
+    """Pull contacts out of a follow-list response.
+
+    The response nests users differently per endpoint, so any object that
+    carries a nickname counts; the follow flags decide whether it is mutual.
+    """
+    users = []
+
+    def walk(node, depth=0):
+        if depth > 6:
+            return
+        if isinstance(node, list):
+            for item in node[:2000]:
+                walk(item, depth + 1)
+        elif isinstance(node, dict):
+            if _norm_value(node.get("nickname")):
+                users.append(node)
+            for value in node.values():
+                walk(value, depth + 1)
+
+    walk(payload)
+
+    records = []
+    seen = set()
+    for user in users:
+        nickname = _norm_value(user.get("nickname"))
+        sec_uid = _norm_value(user.get("sec_uid"))
+        key = sec_uid or nickname
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append(
+            {
+                "nickname": nickname,
+                "remark_name": _norm_value(user.get("remark_name")),
+                "sec_uid": sec_uid,
+                "unique_id": _norm_value(user.get("unique_id")),
+                "short_id": _norm_value(user.get("short_id")),
+                # 0 none, 1 following, 2 mutual - and some endpoints only
+                # report the reverse direction, so keep both signals.
+                "follow_status": user.get("follow_status"),
+                "follower_status": user.get("follower_status"),
+            }
+        )
+    return records
+
+
+def is_mutual_friend(record):
+    """A contact who can be messaged the way the spark list expects."""
+    if record.get("follow_status") == 2:
+        return True
+    return record.get("follow_status") == 1 and record.get("follower_status") == 1
+
+
+def diagnose_friend_list(page, username):
+    """Reconnoitre the follow list: which endpoint carries it, and how many.
+
+    Nothing is sent and no state is written; this only reports what the
+    profile page exposes so the spark list can be built from real friends
+    instead of from whichever conversations happen to be loaded.
+    """
+    logger.info(f"账号 {username} 启用好友列表侦察模式，不发送消息")
+    collected = {}
+    endpoints = {}
+
+    def capture(response):
+        url = getattr(response, "url", "")
+        if not any(marker in url for marker in FRIEND_LIST_MARKERS):
+            return
+        try:
+            if getattr(response, "status", 200) >= 400:
+                return
+            payload = response.json()
+        except Exception:
+            endpoints[url.split("?")[0]] = endpoints.get(url.split("?")[0], 0)
+            return
+        records = parse_friend_list_payload(payload)
+        endpoint = url.split("?")[0]
+        endpoints[endpoint] = endpoints.get(endpoint, 0) + len(records)
+        for record in records:
+            collected[record["sec_uid"] or record["nickname"]] = record
+
+    page.on("response", capture)
+
+    for url in FRIEND_PAGE_URLS:
+        try:
+            retry_operation(
+                "打开抖音个人主页",
+                page.goto,
+                retries=2,
+                delay=2,
+                url=url,
+                wait_until="commit",
+            )
+        except Exception as error:
+            logger.warning(f"账号 {username} 打开 {url} 失败: {error}")
+            continue
+        time.sleep(5)
+        logger.info(f"账号 {username} 已打开 {url}，页面状态: {_page_state(page)}")
+
+        for label in FRIEND_PANEL_LABELS:
+            try:
+                entry = page.get_by_text(label, exact=True)
+                if entry.count() == 0:
+                    continue
+                _locator_action(entry.first, "click", timeout=DEFAULT_SEARCH_ACTION_TIMEOUT_MS)
+                logger.info(f"账号 {username} 已点击入口 {label}")
+                time.sleep(3)
+                break
+            except Exception as error:
+                logger.debug(f"账号 {username} 点击入口 {label} 失败: {error}")
+
+        # Whatever panel opened, scroll it so the list pages in.
+        for _ in range(20):
+            before = len(collected)
+            try:
+                page.mouse.wheel(0, 900)
+            except Exception:
+                page.keyboard.press("PageDown")
+            time.sleep(1.5)
+            if len(collected) == before:
+                break
+
+        logger.info(
+            f"账号 {username} {url} 侦察结果: 接口 {json.dumps(endpoints, ensure_ascii=False)}，"
+            f"累计联系人 {len(collected)} 个，其中互关 "
+            f"{sum(1 for record in collected.values() if is_mutual_friend(record))} 个"
+        )
+        if collected:
+            break
+
+    try:
+        page.remove_listener("response", capture)
+    except Exception:
+        pass
+
+    mutual = sorted(
+        (record for record in collected.values() if is_mutual_friend(record)),
+        key=lambda record: record["nickname"],
+    )
+    logger.info(f"账号 {username} 互关好友共 {len(mutual)} 个")
+    for record in mutual:
+        logger.info(
+            f"账号 {username} 互关好友: {record['remark_name'] or record['nickname']}"
+            f"（昵称 {record['nickname']}，抖音号 {record['unique_id'] or record['short_id']}）"
+        )
+    if not collected:
+        structure = page.evaluate(r"""() => {
+            const visible = element => {
+                const rect = element.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            };
+            return [...document.querySelectorAll('[class]')]
+                .filter(visible)
+                .filter(element => /follow|friend|user-list|关注|朋友/i.test(
+                    String(element.className) + ' ' + (element.innerText || '').slice(0, 20)
+                ))
+                .slice(0, 25)
+                .map(element => ({
+                    tag: element.tagName,
+                    css: String(element.className || '').slice(0, 80),
+                    text: (element.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 40),
+                }));
+        }""")
+        logger.warning(
+            f"账号 {username} 未截获任何好友列表接口，页面候选结构: "
+            f"{json.dumps(structure, ensure_ascii=False)}"
+        )
+    return mutual
+
+
 def handle_response(response: Response):
     """
     只监听你要的那个接口响应
@@ -2529,6 +2713,13 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
             logger.info(f"账号 {username} 启用用户搜索诊断模式，不发送消息")
             try:
                 diagnose_user_search(page, username, targets)
+            finally:
+                session_authenticated = not _logged_out(page)
+            return
+
+        if config.get("diagnoseFriendList"):
+            try:
+                diagnose_friend_list(page, username)
             finally:
                 session_authenticated = not _logged_out(page)
             return
