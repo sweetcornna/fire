@@ -78,6 +78,8 @@ class _Page:
                 self.scroll_top + 1, max(0, len(self.conversations) - self.window)
             )
             return None
+        if "scrollHeight" in script:
+            return {"top": self.scroll_top, "height": len(self.conversations)}
         if "scrollTop" in script:
             return self.scroll_top
         return None
@@ -98,7 +100,9 @@ class PlaceholderIdentityTests(unittest.TestCase):
         self.addCleanup(sleep.stop)
         # Keep the header wait short: sleep is stubbed out, so the real
         # chat-open timeout would spin for seconds per unresolved click.
-        timeouts = patch.dict(tasks.config, {"chatOpenTimeout": 50})
+        timeouts = patch.dict(
+            tasks.config, {"chatOpenTimeout": 50, "listGrowthWaitSeconds": 0}
+        )
         timeouts.start()
         self.addCleanup(timeouts.stop)
         self.submit = patch.object(tasks, "_submit_chat_message").start()

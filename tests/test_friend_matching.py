@@ -231,9 +231,17 @@ class _Page:
             if self.scrolls == 1:
                 self.after_first_scroll()
             return None
+        if "scrollHeight" in script:
+            # A list that still loads keeps growing; a finished one does not.
+            return {"top": self.scroll_top, "height": self.scroll_height()}
         if "scrollTop" in script:
             return self.scroll_top
         return None
+
+    def scroll_height(self):
+        if self.max_scroll_top is None:
+            return self.scroll_top + 800
+        return self.max_scroll_top
 
     def wait_for_selector(self, selector, timeout=None):
         if (
@@ -253,6 +261,11 @@ class FriendMatchingTests(unittest.TestCase):
         self._user_id_dict = tasks.userIDDict
         tasks.time.sleep = lambda _seconds: None
         tasks.userIDDict = {}
+        # Real time still passes while sleep is stubbed out, so the live
+        # wait for the list to load more would dominate the suite.
+        growth = patch.dict(tasks.config, {"listGrowthWaitSeconds": 0})
+        growth.start()
+        self.addCleanup(growth.stop)
 
     def tearDown(self):
         tasks.time.sleep = self._sleep
@@ -679,6 +692,50 @@ class FriendMatchingTests(unittest.TestCase):
         self.assertEqual(editable.typed, ["甲", "乙"])
         self.assertEqual(editable.pressed, ["Shift+Enter", "Enter"])
         self.assertIn("stable-account-id", state["days"][tasks.date.today().isoformat()])
+
+
+class ListGrowthScrollTests(unittest.TestCase):
+    """The list pauses while it fetches the next page of conversations."""
+
+    class _ScrollPage:
+        def __init__(self, heights):
+            self.heights = list(heights)
+            self.scroll_top = 0
+            self.reads = 0
+
+        def locator(self, selector):
+            page = self
+
+            class _Handle:
+                def element_handle(self, *args, **kwargs):
+                    return page if selector == tasks.CONVERSATION_LIST_SELECTOR else None
+
+            return _Handle()
+
+        def evaluate(self, script, element=None):
+            if "scrollHeight" in script:
+                height = self.heights[min(self.reads, len(self.heights) - 1)]
+                self.reads += 1
+                return {"top": self.scroll_top, "height": height}
+            if "scrollTop +=" in script:
+                # Pinned at the end of what is currently rendered.
+                return None
+            return None
+
+    def setUp(self):
+        self._sleep = tasks.time.sleep
+        tasks.time.sleep = lambda _seconds: None
+        self.addCleanup(lambda: setattr(tasks.time, "sleep", self._sleep))
+
+    def test_a_list_still_loading_is_not_taken_for_the_bottom(self):
+        page = self._ScrollPage([2355, 2355, 6107])
+
+        self.assertTrue(tasks._scroll_conversation_list(page, "账号", settle_seconds=5))
+
+    def test_a_list_that_stops_growing_is_the_bottom(self):
+        page = self._ScrollPage([6107])
+
+        self.assertFalse(tasks._scroll_conversation_list(page, "账号", settle_seconds=0))
 
 
 class DecoratedNameMatchingTests(unittest.TestCase):

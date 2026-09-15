@@ -117,6 +117,9 @@ def get_config():
             os.getenv("CHAT_SEND_ACTION_TIMEOUT", "10000")
         ),  # 发送按键单次操作超时时间，单位毫秒
         "taskRetryTimes": int(os.getenv("TASK_RETRY_TIMES", "3")),  # 任务重试次数
+        "listGrowthWaitSeconds": int(
+            os.getenv("LIST_GROWTH_WAIT_SECONDS", "5")
+        ),  # 好友列表滚不动后，等待其加载下一页的时间上限，单位秒
         "placeholderProbeLimit": int(
             os.getenv("PLACEHOLDER_PROBE_LIMIT", "200")
         ),  # 最多打开多少个仅显示 ID 的会话以确认身份

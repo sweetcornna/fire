@@ -71,6 +71,7 @@ FALLBACK_ELEMENT_TIMEOUT_MS = 1500
 DEFAULT_TARGET_RETRY_TIMES = 3
 DEFAULT_SEARCH_RESULT_WAIT_SECONDS = 4
 DEFAULT_CHAT_READY_TIMEOUT_MS = 30000
+DEFAULT_LIST_GROWTH_WAIT_SECONDS = 5
 DEFAULT_PLACEHOLDER_PROBE_LIMIT = 200
 DEFAULT_PLACEHOLDER_PROBE_SECONDS = 900
 CHAT_PAGE_URL = "https://www.douyin.com/chat"
@@ -324,36 +325,21 @@ def collect_friend_titles(page, username):
             )
             return found_titles
 
-        try:
-            scrollable_element = _element_handle_with_timeout(
-                page.locator(CONVERSATION_LIST_SELECTOR), FALLBACK_ELEMENT_TIMEOUT_MS
-            )
-        except Exception:
-            scrollable_element = None
-        if not scrollable_element:
+        if _conversation_scroll_handle(page, username) is None:
             logger.error(f"账号 {username} 匹配诊断未找到滚动容器，退出")
             return found_titles
 
-        scroll_top_before = page.evaluate(
-            "(element) => element.scrollTop", scrollable_element
-        )
-        page.evaluate("(element) => element.scrollTop += 800", scrollable_element)
-        time.sleep(0.3)
-        scroll_top_after = page.evaluate(
-            "(element) => element.scrollTop", scrollable_element
-        )
-
-        if scroll_top_before == scroll_top_after:
-            empty_scroll_count += 2
+        if _scroll_conversation_list(page, username):
             logger.debug(
-                f"账号 {username} 匹配诊断 scrollTop 未变化 ({scroll_top_before})，可能已到底 "
-                f"(空滚动计数: {empty_scroll_count}/{MAX_EMPTY_SCROLLS})"
+                f"账号 {username} 匹配诊断滚动好友列表，已收集 {len(found_titles)} 个标题"
             )
         else:
+            empty_scroll_count += 2
             logger.debug(
-                f"账号 {username} 匹配诊断滚动好友列表 (scrollTop: {scroll_top_before} -> {scroll_top_after})"
+                f"账号 {username} 匹配诊断列表不再滚动也不再加载，可能已到底 "
+                f"(空滚动计数: {empty_scroll_count}/{MAX_EMPTY_SCROLLS})"
             )
-        time.sleep(1.5)
+        time.sleep(1.0)
 
 
 def _chat_header_names(page):
@@ -473,20 +459,50 @@ def _conversation_scroll_handle(page, username):
         return None
 
 
-def _scroll_conversation_list(page, username, delta=800):
-    """Scroll the virtualized conversation list; True when it actually moved."""
+def _conversation_scroll_metrics(page, scrollable):
+    metrics = page.evaluate(
+        "(element) => ({ top: element.scrollTop, height: element.scrollHeight })",
+        scrollable,
+    )
+    if not isinstance(metrics, dict):
+        return {"top": 0, "height": 0}
+    return {"top": metrics.get("top") or 0, "height": metrics.get("height") or 0}
+
+
+def _scroll_conversation_list(page, username, delta=800, settle_seconds=None):
+    """Scroll the conversation list, waiting for it to load the next page.
+
+    Douyin fetches more conversations only once the scroll reaches the end of
+    what is already rendered, so an unchanged scrollTop means "still loading"
+    at least as often as it means "bottom".  Reading it as the bottom is what
+    made a run walk 45 of 101 conversations and declare the rest missing.
+    """
     scrollable = _conversation_scroll_handle(page, username)
     if scrollable is None:
         return False
+    settle = settle_seconds if settle_seconds is not None else config.get(
+        "listGrowthWaitSeconds", DEFAULT_LIST_GROWTH_WAIT_SECONDS
+    )
     try:
-        before = page.evaluate("(element) => element.scrollTop", scrollable)
-        page.evaluate(f"(element) => {{ element.scrollTop += {int(delta)}; }}", scrollable)
-        time.sleep(0.3)
-        after = page.evaluate("(element) => element.scrollTop", scrollable)
+        before = _conversation_scroll_metrics(page, scrollable)
+        deadline = time.monotonic() + max(0.0, float(settle))
+        while True:
+            page.evaluate(
+                f"(element) => {{ element.scrollTop += {int(delta)}; }}", scrollable
+            )
+            time.sleep(0.3)
+            after = _conversation_scroll_metrics(page, scrollable)
+            if after["top"] != before["top"] or after["height"] > before["height"]:
+                return True
+            if time.monotonic() >= deadline:
+                logger.debug(
+                    f"账号 {username} 好友列表 {settle}s 内既未滚动也未加载更多 "
+                    f"(scrollTop {before['top']}, scrollHeight {before['height']})"
+                )
+                return False
     except Exception as error:
         logger.debug(f"账号 {username} 滚动好友列表失败: {error}")
         return False
-    return before != after
 
 
 def _reset_conversation_scroll(page, username):
@@ -2305,33 +2321,21 @@ def scroll_and_select_user(page, username, targets):
                 return
 
             if scrollable_element:
-                # [修复] 记录滚动前的 scrollTop，用于检测是否真的滚动了
-                scroll_top_before = page.evaluate(
-                    "(element) => element.scrollTop", scrollable_element
-                )
-
-                page.evaluate(
-                    "(element) => element.scrollTop += 800", scrollable_element
-                )
-
-                # [修复] 检测滚动后的 scrollTop
-                time.sleep(0.3)
-                scroll_top_after = page.evaluate(
-                    "(element) => element.scrollTop", scrollable_element
-                )
-
-                if scroll_top_before == scroll_top_after:
-                    # scrollTop 没有变化，说明已经到底了
-                    empty_scroll_count += 2  # 加速判定到底
+                # An unchanged scrollTop is only the bottom once the list has
+                # also stopped loading more conversations.
+                if _scroll_conversation_list(page, username):
                     logger.debug(
-                        f"账号 {username} scrollTop 未变化 ({scroll_top_before})，可能已到底 (空滚动计数: {empty_scroll_count}/{MAX_EMPTY_SCROLLS})"
+                        f"账号 {username} 滚动好友列表以加载更多好友，"
+                        f"已发现 {len(found_targets)} 个标题"
                     )
                 else:
+                    empty_scroll_count += 2  # 加速判定到底
                     logger.debug(
-                        f"账号 {username} 滚动好友列表以加载更多好友 (scrollTop: {scroll_top_before} -> {scroll_top_after})"
+                        f"账号 {username} 列表不再滚动也不再加载，可能已到底 "
+                        f"(空滚动计数: {empty_scroll_count}/{MAX_EMPTY_SCROLLS})"
                     )
 
-                time.sleep(1.5)
+                time.sleep(1.0)
             else:
                 logger.warning(
                     f"账号 {username} 未找到好友列表滚动容器，立即使用搜索兜底"
