@@ -1,0 +1,9 @@
+[Unit]
+Description=DouYin spark daily delivery
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=cornna
+ExecStart=/opt/fire/deploy/run.sh
