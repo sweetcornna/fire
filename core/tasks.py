@@ -2637,6 +2637,10 @@ def scroll_and_select_user(page, username, targets):
                     if _await_conversation_growth(
                         page, username, best_list_height, list_scan_deadline
                     ):
+                        # Conversations that load late arrive as bare ids far
+                        # more often than the first page does, and a probe that
+                        # ran while the list was still short saw none of them.
+                        placeholder_probe_done = False
                         _reset_conversation_scroll(page, username)
                         found_targets.clear()
                         empty_scroll_count = 0
