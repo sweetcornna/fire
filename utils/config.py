@@ -117,6 +117,15 @@ def get_config():
             os.getenv("CHAT_SEND_ACTION_TIMEOUT", "10000")
         ),  # 发送按键单次操作超时时间，单位毫秒
         "taskRetryTimes": int(os.getenv("TASK_RETRY_TIMES", "3")),  # 任务重试次数
+        "maxSendsPerRun": int(
+            os.getenv("MAX_SENDS_PER_RUN", "35")
+        ),  # 单次运行最多提交多少条消息，0 表示不限制
+        "sendIntervalMinSeconds": int(
+            os.getenv("SEND_INTERVAL_MIN_SECONDS", "25")
+        ),  # 两条消息之间的最短间隔，单位秒
+        "sendIntervalMaxSeconds": int(
+            os.getenv("SEND_INTERVAL_MAX_SECONDS", "70")
+        ),  # 两条消息之间的最长间隔，单位秒
         "listGrowthWaitSeconds": int(
             os.getenv("LIST_GROWTH_WAIT_SECONDS", "5")
         ),  # 好友列表滚不动后，等待其加载下一页的时间上限，单位秒

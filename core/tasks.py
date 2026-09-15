@@ -1,4 +1,5 @@
 import traceback
+import random
 import re
 import requests
 import json
@@ -72,6 +73,9 @@ DEFAULT_TARGET_RETRY_TIMES = 3
 DEFAULT_SEARCH_RESULT_WAIT_SECONDS = 4
 DEFAULT_CHAT_READY_TIMEOUT_MS = 30000
 DEFAULT_LIST_GROWTH_WAIT_SECONDS = 12
+DEFAULT_MAX_SENDS_PER_RUN = 35
+DEFAULT_SEND_INTERVAL_MIN_SECONDS = 25
+DEFAULT_SEND_INTERVAL_MAX_SECONDS = 70
 DEFAULT_PLACEHOLDER_PROBE_LIMIT = 200
 DEFAULT_PLACEHOLDER_PROBE_SECONDS = 900
 CHAT_PAGE_URL = "https://www.douyin.com/chat"
@@ -1992,6 +1996,22 @@ def _send_message_to_target(
     return selected_target
 
 
+def _pace_next_delivery(username):
+    """Wait between messages.
+
+    Sending 49 messages in under seven minutes got the web session revoked
+    mid-run; a person does not message a hundred friends back to back.
+    """
+    low = max(0, int(config.get("sendIntervalMinSeconds", DEFAULT_SEND_INTERVAL_MIN_SECONDS)))
+    high = max(low, int(config.get("sendIntervalMaxSeconds", DEFAULT_SEND_INTERVAL_MAX_SECONDS)))
+    if high <= 0:
+        return 0
+    pause = random.uniform(low, high)
+    logger.debug(f"账号 {username} 距下一条消息等待 {pause:.1f} 秒")
+    time.sleep(pause)
+    return pause
+
+
 def _send_target_with_retries(
     page, account_name, target, message=None, delivery_key=None
 ):
@@ -2795,7 +2815,17 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
         completed_targets = set(completed)
         message = build_message() if pending_targets else ""
         selections = scroll_and_select_user(page, account_name, pending_targets) if pending_targets else ()
+        quota = max(0, int(config.get("maxSendsPerRun", DEFAULT_MAX_SENDS_PER_RUN)))
+        sent_this_run = 0
+        stopped_for_quota = False
         for target in selections:
+            if quota and sent_this_run >= quota:
+                stopped_for_quota = True
+                logger.info(
+                    f"账号 {account_name} 本次已发送 {sent_this_run} 条，达到单次配额 {quota}，"
+                    "其余目标留给后续运行"
+                )
+                break
             delivered = _send_target_with_retries(
                 page,
                 account_name,
@@ -2805,6 +2835,9 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
             )
             if delivered:
                 completed_targets.add(_delivery_state_key(target))
+                sent_this_run += 1
+                if not (quota and sent_this_run >= quota):
+                    _pace_next_delivery(account_name)
 
         # Mapping may arrive while traversing the virtual list. Count an alias
         # of a completed identity without submitting to that person again.
@@ -2823,6 +2856,15 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
             target for target in all_targets if _delivery_state_key(target) not in completed_targets
         ]
         missing_count = len(all_targets) - completed_count
+        if missing_count and stopped_for_quota:
+            # Stopping on quota is the plan, not a failure: the next run
+            # resumes from the same daily state.
+            logger.info(
+                f"账号 {account_name} 本次按配额提交 {sent_this_run} 条，"
+                f"累计完成 {completed_count}/{len(all_targets)}，"
+                f"剩余 {missing_count} 个目标留给后续运行"
+            )
+            return
         if missing_count:
             logger.warning(f"账号 {account_name} 本次有目标未完成: {failed_targets}")
             raise RuntimeError(
