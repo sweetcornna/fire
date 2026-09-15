@@ -807,6 +807,43 @@ def diagnose_friend_matching(page, username, targets):
     return matched, unmatched
 
 
+CONVERSATION_SYNC_MARKERS = ("get_message_by_init", "get_conversation_list")
+
+
+def describe_conversation_payload(content_type, body):
+    """Summarise a conversation sync response without logging its content.
+
+    The run log is a public artifact, so only shapes are reported: how large
+    the response was, how many conversations it carried, and whether the
+    server said more are available.
+    """
+    summary = {"type": (content_type or "").split(";")[0], "bytes": len(body or b"")}
+    try:
+        payload = json.loads(body)
+    except Exception:
+        return summary
+
+    def walk(node, depth=0):
+        if depth > 6 or not isinstance(node, (dict, list)):
+            return
+        if isinstance(node, list):
+            for item in node[:20]:
+                walk(item, depth + 1)
+            return
+        for key, value in node.items():
+            lowered = str(key).lower()
+            if lowered in {"has_more", "hasmore"} and not isinstance(value, (dict, list)):
+                summary["has_more"] = value
+            elif lowered in {"next_cursor", "cursor", "next_conversation_version"} and not isinstance(value, (dict, list)):
+                summary.setdefault("cursor", value)
+            elif "conversation" in lowered and isinstance(value, list):
+                summary["conversations"] = max(summary.get("conversations", 0), len(value))
+            walk(value, depth + 1)
+
+    walk(payload)
+    return summary
+
+
 def handle_response(response: Response):
     """
     只监听你要的那个接口响应
@@ -2445,6 +2482,16 @@ def do_user_task(browser, username, cookies, targets, unique_id=None):
                 f"账号 {username} 已代理抖音会话搜索接口: "
                 f"status={upstream.status_code} url={request.url.split('?')[0]}"
             )
+            if any(marker in request.url for marker in CONVERSATION_SYNC_MARKERS):
+                logger.info(
+                    f"账号 {username} 会话同步响应 {request.url.split('?')[0]}: "
+                    + json.dumps(
+                        describe_conversation_payload(
+                            upstream.headers.get("content-type", ""), upstream.content
+                        ),
+                        ensure_ascii=False,
+                    )
+                )
         except Exception as error:
             logger.warning(f"账号 {username} 代理抖音会话搜索接口失败: {error}")
             # The upstream request may already have been accepted, including a

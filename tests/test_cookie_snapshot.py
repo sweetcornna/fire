@@ -69,5 +69,37 @@ class SessionFingerprintTests(unittest.TestCase):
         self.assertNotIn("old", json.dumps(before))
 
 
+class ConversationSyncSummaryTests(unittest.TestCase):
+    def test_summary_reports_shape_without_any_conversation_content(self):
+        import core.tasks as tasks
+
+        body = json.dumps(
+            {
+                "data": {
+                    "has_more": True,
+                    "next_cursor": "42",
+                    "conversation_list": [
+                        {"conversation_id": "c1", "name": "私密昵称"},
+                        {"conversation_id": "c2", "name": "另一个昵称"},
+                    ],
+                }
+            }
+        ).encode("utf-8")
+
+        summary = tasks.describe_conversation_payload("application/json", body)
+
+        self.assertEqual(summary["conversations"], 2)
+        self.assertTrue(summary["has_more"])
+        self.assertEqual(summary["bytes"], len(body))
+        self.assertNotIn("私密昵称", json.dumps(summary, ensure_ascii=False))
+
+    def test_a_binary_response_still_reports_its_size(self):
+        import core.tasks as tasks
+
+        summary = tasks.describe_conversation_payload("application/octet-stream", b"\x00\x01\x02")
+
+        self.assertEqual(summary, {"type": "application/octet-stream", "bytes": 3})
+
+
 if __name__ == "__main__":
     unittest.main()
